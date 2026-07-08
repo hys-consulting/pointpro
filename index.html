@@ -4873,11 +4873,21 @@ function initOfflineIndicator() {
 const SUPA_CONFIG_KEY = 'hys_supa_config';
 const SUPA_MAX_CONSECUTIVE_FAILURES = 3; // coupe-circuit anti-spam
 
+// Identifiants par défaut du projet Supabase de l'organisation. Ce sont des
+// clés "anon" publiques (protégées par les policies RLS côté serveur, pas des
+// secrets) — les intégrer ici permet à chaque collaborateur d'avoir la synchro
+// active sans ressaisir manuellement l'URL/clé. Modifiable depuis Paramètres →
+// Supabase, qui prime alors sur ces valeurs par défaut.
+const SUPA_DEFAULT_URL = 'https://yxfcctwrxxtbyungrmmu.supabase.co';
+const SUPA_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4ZmNjdHdyeHh0Ynl1bmdybW11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyODU3NzAsImV4cCI6MjA5Nzg2MTc3MH0.McQ5-6rybg6F2aRZ4mwQOS41zYsHDDYOCNQTKFusb2w';
+
 function getSupaConfig() {
   try {
     const raw = JSON.parse(localStorage.getItem(SUPA_CONFIG_KEY));
-    return { url: (raw && raw.url) || '', key: (raw && raw.key) || '' };
-  } catch { return { url: '', key: '' }; }
+    if (raw && raw.disabled) return { url: '', key: '' };
+    if (raw && raw.url && raw.key) return { url: raw.url, key: raw.key };
+  } catch {}
+  return { url: SUPA_DEFAULT_URL, key: SUPA_DEFAULT_KEY };
 }
 function setSupaConfig(url, key) {
   localStorage.setItem(SUPA_CONFIG_KEY, JSON.stringify({ url: (url||'').trim().replace(/\/+$/,''), key: (key||'').trim() }));
@@ -4885,7 +4895,7 @@ function setSupaConfig(url, key) {
   supa._failCount = 0;
 }
 function clearSupaConfig() {
-  localStorage.removeItem(SUPA_CONFIG_KEY);
+  localStorage.setItem(SUPA_CONFIG_KEY, JSON.stringify({ disabled: true }));
   supa._disabled = false;
   supa._failCount = 0;
 }
