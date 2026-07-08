@@ -815,6 +815,33 @@ const store = {
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+// ─── CODE COULEUR PAR PROMOTION ────────────────────────────────────────────
+// Palette fixe pour les promotions connues + couleur dérivée (hash) en repli
+// pour toute nouvelle promotion, afin que chaque promo soit visuellement
+// distincte partout dans l'app (Stagiaires, Émargements, Calendrier CFA…).
+const PROMO_PALETTE = {
+  CATL: { bg: '#fee2e2', fg: '#b91c1c' }, // rouge
+  EPR2: { bg: '#dbeafe', fg: '#1d4ed8' }, // bleu
+  EPR3: { bg: '#e0e7ff', fg: '#4338ca' }, // indigo
+  APH1: { bg: '#dcfce7', fg: '#15803d' }, // vert
+  APH2: { bg: '#fef3c7', fg: '#b45309' }, // ambre
+};
+const PROMO_FALLBACK_COLORS = [
+  { bg: '#fce7f3', fg: '#be185d' }, { bg: '#e0f2fe', fg: '#0369a1' },
+  { bg: '#f3e8ff', fg: '#7e22ce' }, { bg: '#ecfccb', fg: '#4d7c0f' },
+];
+function promoColor(promo) {
+  if (!promo) return { bg: '#f1f5f9', fg: '#64748b' };
+  if (PROMO_PALETTE[promo]) return PROMO_PALETTE[promo];
+  let h = 0; for (let i=0;i<promo.length;i++) h = (h*31 + promo.charCodeAt(i)) >>> 0;
+  return PROMO_FALLBACK_COLORS[h % PROMO_FALLBACK_COLORS.length];
+}
+function promoBadge(promo) {
+  if (!promo) return `<span class="badge badge-gray">—</span>`;
+  const c = promoColor(promo);
+  return `<span class="badge" style="background:${c.bg};color:${c.fg};border:1px solid ${c.fg}22">${promo}</span>`;
+}
 function now() { return new Date().toISOString(); }
 function dateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function timeStr(d) { return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; }
@@ -1250,7 +1277,7 @@ function renderRecentEmargements() {
         return `<tr>
           <td class="td-bold">${u ? u.prenom+' '+u.nom : '—'}</td>
           <td><span class="badge badge-blue">${DEMIJOURNEES[e.session]?.label||e.session}</span></td>
-          <td><span class="badge badge-purple">${e.promotion||'—'}</span></td>
+          <td>${promoBadge(e.promotion)}</td>
           <td>${presences}/${total}</td>
           <td>${e.signatureFormateur ? '<span class="badge badge-green">✅ Signé</span>' : '<span class="badge badge-amber">En attente</span>'}</td>
         </tr>`;
@@ -1637,7 +1664,7 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
               const present = e.presences?.[s.id] || false;
               return `<tr>
                 <td class="td-bold">${s.prenom} ${s.nom}</td>
-                <td><span class="badge badge-purple">${s.promotion}</span></td>
+                <td>${promoBadge(s.promotion)}</td>
                 <td><span class="badge ${present?'badge-green':'badge-red'}">${present?'✅ Présent':'❌ Absent'}</span></td>
               </tr>`;
             }).join('')}</tbody>
@@ -1780,7 +1807,7 @@ function renderPageStagiaires(filterPromo='', search='') {
           <td class="text-muted text-xs">${i+1}</td>
           <td class="td-bold">${s.nom}</td>
           <td>${s.prenom}</td>
-          <td><span class="badge badge-purple">${s.promotion||'—'}</span></td>
+          <td>${promoBadge(s.promotion)}</td>
           <td class="text-xs text-muted">${s.entreprise||'—'}</td>
           <td><span class="badge ${s.statut==='actif'?'badge-green':'badge-gray'}">${s.statut==='actif'?'Actif':'Inactif'}</span></td>
           <td>
@@ -1927,7 +1954,7 @@ function renderPageAlternance() {
             return `<tr>
               <td class="td-bold">${s.debut}</td>
               <td>${s.fin}</td>
-              <td><span class="badge badge-purple">${s.promotion||'—'}</span></td>
+              <td>${promoBadge(s.promotion)}</td>
               <td class="text-xs text-muted">${s.theme||'—'}</td>
               <td><span class="badge ${isActive?'badge-green':isPast?'badge-gray':'badge-blue'}">${isActive?'✅ En cours':isPast?'Terminée':'À venir'}</span></td>
               <td>
@@ -3802,7 +3829,7 @@ function renderProchainsSemaines() {
       return `<tr>
         <td class="td-bold">${s.debut}</td>
         <td>${s.fin}</td>
-        <td><span class="badge badge-purple">${s.promotion || '—'}</span></td>
+        <td>${promoBadge(s.promotion)}</td>
         <td class="text-xs text-muted">${s.theme || '—'}</td>
         <td><span class="badge ${isActive ? 'badge-green' : isPast ? 'badge-gray' : 'badge-blue'}">${isActive ? '✅ En cours' : isPast ? 'Terminée' : '📅 À venir'}</span></td>
         <td><button class="btn btn-ghost btn-xs conv-btn" data-semid="${s.id}">🖨 Conv.</button></td>
@@ -4469,15 +4496,15 @@ async function seedAliMoussa() {
     nom: 'Moussa',
     role: ROLES.COLLAB,
     service: 'Coordinateur Pédagogique',
-    dateEntree: '2026-07-01',
+    dateEntree: '2026-08-03',
     statut: 'actif',
     firstLogin: true,
     createdAt: now(),
   });
   store.saveUsers(users);
-  // Solde CP : CDI 1er juillet, reliquat N-1 = 0
+  // Solde CP : CDI 3 août 2026, reliquat N-1 = 0
   store.saveSoldeUser({ userId: users[users.length-1].id, reliquatN1: 0, updatedAt: now() });
-  store.addAudit({ action: 'SEED_ALI_MOUSSA', userId: 'system', detail: 'ALI Moussa — Coordinateur Pédagogique CDI ajouté (1er juillet 2026)' });
+  store.addAudit({ action: 'SEED_ALI_MOUSSA', userId: 'system', detail: 'ALI Moussa — Coordinateur Pédagogique CDI ajouté (3 août 2026)' });
   store.addNotif({ type: 'info', message: `ALI Moussa (Coordinateur Pédagogique) ajouté — identifiant : ali.moussa / mot de passe temporaire : ${tempPwd} (à communiquer en privé, changez-le après l'avoir noté)` });
 }
 
@@ -4816,7 +4843,7 @@ function renderPageDashboardDG() {
             ${prochaineCFA ? `<div style="background:var(--bg3);border-radius:var(--radius-xs);padding:8px 10px;border:1px solid var(--border)">
               <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px">Prochaine</div>
               <div style="font-size:12px;font-weight:700">${prochaineCFA.debut} → ${prochaineCFA.fin}</div>
-              <span class="badge badge-purple" style="margin-top:4px">${prochaineCFA.promotion}</span>
+              ${promoBadge(prochaineCFA.promotion).replace('class="badge"', 'class="badge" style="margin-top:4px;')}
             </div>` : '<div class="text-xs text-muted" style="padding:6px 0">Aucune semaine CFA planifiée</div>'}
           </div>
 
@@ -5902,7 +5929,7 @@ function renderQualiopiPresences(filterPromo = '') {
           return `<tr>
             <td class="td-bold">${e.date}</td>
             <td><span class="badge badge-blue">${DEMIJOURNEES[e.session]?.label||e.session}</span></td>
-            <td><span class="badge badge-purple">${e.promotion||'—'}</span></td>
+            <td>${promoBadge(e.promotion)}</td>
             <td class="text-xs">${fmtr?fmtr.prenom+' '+fmtr.nom:'—'}</td>
             <td>
               <span class="badge ${taux>=80?'badge-green':taux>=60?'badge-amber':'badge-red'}">${pres}/${stags.length} · ${taux}%</span>
@@ -6285,7 +6312,7 @@ function renderPageModules(filterPromo = '', search = '') {
               ${tauxPres!==null?`<span class="badge ${tauxPres>=80?'badge-green':tauxPres>=60?'badge-amber':'badge-red'}">${tauxPres}%</span>`:'<span class="badge badge-gray">—</span>'}
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
-              ${(m.promotions||[]).map(p=>`<span class="badge badge-purple">${p}</span>`).join('')}
+              ${(m.promotions||[]).map(p=>promoBadge(p)).join('')}
             </div>
             <div style="font-size:11px;color:var(--text3);display:flex;flex-direction:column;gap:2px">
               ${m.dateDebut?`<span>📅 ${m.dateDebut} → ${m.dateFin||'…'}</span>`:''}
