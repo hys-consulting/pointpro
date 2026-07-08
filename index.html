@@ -5170,6 +5170,11 @@ const SYNC_MAP = [
 // Pull depuis Supabase → localStorage
 async function syncPull() {
   if (!supa.isConfigured() || !navigator.onLine) return false;
+  // Attendre les envois en cours AVANT de tirer les données du serveur : sinon
+  // un pull qui arrive juste après un push (ex: création d'un utilisateur) peut
+  // écraser la donnée locale toute fraîche avec l'ancienne version serveur,
+  // avant même que le push n'ait eu le temps d'aboutir — perte de données silencieuse.
+  if (_pendingPushes.length) await Promise.allSettled(_pendingPushes);
   setSyncStatus('syncing');
   let ok = true;
   for (const m of SYNC_MAP) {
@@ -5234,6 +5239,9 @@ async function drainSyncQueue() {
 // On surcharge saveUsers, savePointages, etc. pour pousser vers Supabase
 // en plus d'écrire dans localStorage
 const _storeSetOrig = store.set.bind(store);
+// Envois en cours (fire-and-forget) — suivis pour que syncPull() puisse les
+// attendre avant d'écraser le cache local (voir explication dans syncPull).
+const _pendingPushes = [];
 const _syncTableMap = {
   'hys_users':        'hys_users',
   'hys_stagiaires':   'hys_stagiaires',
@@ -5262,15 +5270,20 @@ store.set = function(key, val) {
   const result = _storeSetOrig(key, val);
   if (table && supa.isConfigured()) {
     if (Array.isArray(val) && val.length > 0) {
-      // Push async, ne bloque pas l'UI
-      syncPush(table, val).catch(() => {});
+      // Push async, ne bloque pas l'UI — mais suivi pour que syncPull() puisse
+      // attendre sa fin avant d'écraser localStorage avec les données serveur.
+      const p = syncPush(table, val).catch(() => {});
+      _pendingPushes.push(p);
+      p.finally(() => { const i = _pendingPushes.indexOf(p); if (i >= 0) _pendingPushes.splice(i, 1); });
     }
     removedIds.forEach(id => { supa.delete(table, id).catch(() => {}); });
   }
   // Paramètres : objet unique (pas un tableau de lignes) — stocké dans une
   // seule ligne "global" de hys_settings, contrairement aux autres tables.
   if (key === SK.SETTINGS && supa.isConfigured() && val && typeof val === 'object') {
-    syncPush('hys_settings', [{ id: 'global', data: val, updatedAt: new Date().toISOString() }]).catch(() => {});
+    const p = syncPush('hys_settings', [{ id: 'global', data: val, updatedAt: new Date().toISOString() }]).catch(() => {});
+    _pendingPushes.push(p);
+    p.finally(() => { const i = _pendingPushes.indexOf(p); if (i >= 0) _pendingPushes.splice(i, 1); });
   }
   return result;
 };
