@@ -729,7 +729,7 @@ const ROLE_LABELS = {
 // ─── TYPES DE DEMI-JOURNÉE ──────────────────────────────────────────────────
 const DEMIJOURNEES = {
   matin:    { label:'Matin',    icon:'🌅', heureDebut:'08:00', heureFin:'12:00' },
-  apresmidi:{ label:'Après-midi',icon:'🌇', heureDebut:'13:00', heureFin:'17:00' },
+  apresmidi:{ label:'Après-midi',icon:'🌇', heureDebut:'13:00', heureFin:'16:00' },
 };
 
 // ─── ÉTAT GLOBAL ────────────────────────────────────────────────────────────
@@ -786,7 +786,7 @@ const store = {
       organisation: 'HYS Consulting',
       territoire: 'mayotte',
       heureDebut: '08:00',
-      heureFin: '17:00',
+      heureFin: '16:00',
       pauseDejeIner: 60,
       promotions: ['EPR1','EPR2','EPR3','APH1','APH2','CATL'],
     };
@@ -2444,7 +2444,7 @@ function renderPageParametres() {
             <input id="set-hdeb" type="time" class="form-control" value="${s.heureDebut||'08:00'}" style="max-width:140px">
           </div>
           <div class="form-group"><label>Heure de fin (défaut)</label>
-            <input id="set-hfin" type="time" class="form-control" value="${s.heureFin||'17:00'}" style="max-width:140px">
+            <input id="set-hfin" type="time" class="form-control" value="${s.heureFin||'16:00'}" style="max-width:140px">
           </div>
         </div>
         <div class="settings-section">
@@ -3650,7 +3650,7 @@ async function generatePDFConvocation(formateurId, semaineCfaId) {
     pdfLabel(doc, 'Date de fin', semaine.fin, M + 5, y + 0, 55);
     y += 8;
     pdfLabel(doc, 'Module / Thème', semaine.theme || 'À préciser', M + 5, y); y += 8;
-    pdfLabel(doc, 'Horaires', `${settings.heureDebut || '08:00'} — ${settings.heureFin || '17:00'}`, M + 5, y); y += 8;
+    pdfLabel(doc, 'Horaires', `${settings.heureDebut || '08:00'} — ${settings.heureFin || '16:00'}`, M + 5, y); y += 8;
     pdfLabel(doc, 'Lieu', 'HYS Consulting · Pamandzi, Mayotte', M + 5, y);
     y += 16;
 
@@ -5135,6 +5135,15 @@ async function syncPull() {
       store.invalidate(m.sk);
     } else { ok = false; }
   }
+  // Paramètres : ligne unique "global", pas un tableau de lignes
+  const settingsRows = await supa.select('hys_settings');
+  if (settingsRows !== null) {
+    const row = settingsRows.find(r => r.id === 'global');
+    if (row && row.data) {
+      _storeSetOrig(SK.SETTINGS, row.data);
+      store.invalidate(SK.SETTINGS);
+    }
+  } else { ok = false; }
   _lastSync = Date.now();
   setSyncStatus(ok ? 'online' : 'error');
   return ok;
@@ -5210,6 +5219,11 @@ store.set = function(key, val) {
       syncPush(table, val).catch(() => {});
     }
     removedIds.forEach(id => { supa.delete(table, id).catch(() => {}); });
+  }
+  // Paramètres : objet unique (pas un tableau de lignes) — stocké dans une
+  // seule ligne "global" de hys_settings, contrairement aux autres tables.
+  if (key === SK.SETTINGS && supa.isConfigured() && val && typeof val === 'object') {
+    syncPush('hys_settings', [{ id: 'global', data: val, updated_at: new Date().toISOString() }]).catch(() => {});
   }
   return result;
 };
@@ -5292,6 +5306,11 @@ function renderSupabaseSettings() {
               <td><span class="badge ${isConfigured ? 'badge-green' : 'badge-gray'}">${isConfigured ? '🔗 Lié' : '—'}</span></td>
             </tr>`;
           }).join('')}
+          <tr>
+            <td class="td-bold">Paramètres</td>
+            <td><span class="badge badge-blue">${store.get(SK.SETTINGS) ? 1 : 0} enreg.</span></td>
+            <td><span class="badge ${isConfigured ? 'badge-green' : 'badge-gray'}">${isConfigured ? '🔗 Lié' : '—'}</span></td>
+          </tr>
         </tbody>
       </table></div>
 
@@ -5404,6 +5423,13 @@ create table if not exists hys_audit (
   created_at timestamptz default now()
 );
 
+-- Table paramètres (ligne unique "global", horaires/config de l'organisme)
+create table if not exists hys_settings (
+  id text primary key default 'global',
+  data jsonb,
+  updated_at timestamptz default now()
+);
+
 -- RLS : désactivé pour commencer (activer après tests)
 -- alter table hys_users enable row level security;
 
@@ -5435,6 +5461,11 @@ async function syncPushAll() {
       const result = await supa.upsert(m.table, data);
       if (!result) { ok = false; console.warn('[Supa] Push failed:', m.table); }
     }
+  }
+  const settingsData = store.get(SK.SETTINGS);
+  if (settingsData) {
+    const result = await supa.upsert('hys_settings', [{ id: 'global', data: settingsData, updated_at: new Date().toISOString() }]);
+    if (!result) { ok = false; console.warn('[Supa] Push failed: hys_settings'); }
   }
   _lastSync = Date.now();
   setSyncStatus(ok ? 'online' : 'error');
@@ -6775,7 +6806,7 @@ async function initDefaultData() {
       organisation: 'HYS Consulting',
       territoire: 'mayotte',
       heureDebut: '08:00',
-      heureFin: '17:00',
+      heureFin: '16:00',
       pauseDejeIner: 60,
       promotions: ['EPR1','EPR2','EPR3','APH1','APH2','CATL'],
     });
