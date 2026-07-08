@@ -2673,14 +2673,24 @@ function joursOuvrablesBetween(debut, fin) {
 }
 
 // Calcul CP acquis depuis date d'entrée jusqu'à aujourd'hui (2,5j/mois, période juin–mai)
+// Début de la période de référence CP en cours (1er juin → 31 mai, comme dans
+// le fichier de suivi RH). Tout le monde acquiert des droits sur cette période
+// commune, à partir du 1er juin OU de sa date d'entrée si postérieure.
+function getPeriodeCPDebut(ref) {
+  const d = ref || new Date();
+  const year = d.getMonth() >= 5 ? d.getFullYear() : d.getFullYear() - 1; // mois 5 = juin (0-indexé)
+  return new Date(year, 5, 1);
+}
 function calcCPAcquis(dateEntree) {
   const entree = new Date(dateEntree + 'T00:00:00');
+  const periodeDebut = getPeriodeCPDebut(new Date());
+  const start = entree > periodeDebut ? entree : periodeDebut;
   const today  = new Date();
-  if (today <= entree) return 0;
+  if (today <= start) return 0;
   // Compter les mois complets
-  let months = (today.getFullYear() - entree.getFullYear()) * 12
-             + (today.getMonth()    - entree.getMonth());
-  if (today.getDate() < entree.getDate()) months--;
+  let months = (today.getFullYear() - start.getFullYear()) * 12
+             + (today.getMonth()    - start.getMonth());
+  if (today.getDate() < start.getDate()) months--;
   if (months < 0) months = 0;
   return Math.round(months * TAUX_MENSUEL_CP * 10) / 10;
 }
