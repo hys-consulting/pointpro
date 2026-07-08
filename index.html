@@ -989,6 +989,43 @@ function calcHeuresJour(pts) {
   return Math.round(total);
 }
 
+// ─── RETARDS & OUBLIS DE POINTAGE ──────────────────────────────────────────────
+// Détecte, pour les collaborateurs actifs et sur un jour ouvré :
+//  - les retards : personne pas encore pointée alors que l'heure de début est
+//    dépassée (avec une marge de tolérance) ;
+//  - les oublis de pointage : personne pointée en entrée mais jamais en sortie,
+//    alors que l'heure de fin est largement dépassée.
+const RETARD_TOLERANCE_MIN = 15; // marge avant de considérer un retard
+const OUBLI_SORTIE_TOLERANCE_MIN = 60; // marge après l'heure de fin avant de signaler un oubli
+
+function getPointageIssuesDuJour() {
+  const now = new Date();
+  const jour = now.getDay(); // 0=dimanche, 6=samedi
+  const result = { retards: [], oublis: [] };
+  if (jour === 0 || jour === 6) return result; // pas de contrôle le week-end
+
+  const today = dateStr(now);
+  const settings = store.settings();
+  const [hD, mD] = (settings.heureDebut||'08:00').split(':').map(Number);
+  const [hF, mF] = (settings.heureFin||'16:00').split(':').map(Number);
+  const seuilRetard = new Date(now); seuilRetard.setHours(hD, mD + RETARD_TOLERANCE_MIN, 0, 0);
+  const seuilOubli  = new Date(now); seuilOubli.setHours(hF, mF + OUBLI_SORTIE_TOLERANCE_MIN, 0, 0);
+
+  const collabs = store.users().filter(u => u.statut === 'actif' && u.role === ROLES.COLLAB);
+  collabs.forEach(u => {
+    if (isAbsentAujourdHui(u.id)) return; // en congé/absence approuvée : pas un retard
+    const pts = getPointagesUserDay(u.id, today);
+    const entree = pts.find(p => p.type === 'entree');
+    const sortie = [...pts].reverse().find(p => p.type === 'sortie');
+    if (!entree && now > seuilRetard) {
+      result.retards.push(u);
+    } else if (entree && !sortie && now > seuilOubli) {
+      result.oublis.push({ ...u, _heureEntree: entree.heure.slice(0,5) });
+    }
+  });
+  return result;
+}
+
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 function updateNotifBadge() {
   const unread = store.notifs().filter(n => !n.lu).length;
@@ -2129,7 +2166,8 @@ function showModalCorrection(userId, date) {
         store.savePointages(allPts);
         store.addAudit({ action:'CORRECTION_POINTAGE', userId:currentUser.id, detail:`Correction pointage ${esc(u.prenom)} ${esc(u.nom)} (${date}) — ${motif}` });
         closeModal(); toast('Pointage corrigé.','success');
-        renderPagePointageAdmin(date, '');
+        if (currentPage === 'presence-rt') renderPagePresenceRT();
+        else renderPagePointageAdmin(date, '');
       }}
     ]);
 }
@@ -3018,6 +3056,7 @@ function renderPagePresenceRT() {
   }).length;
   const absentCollabs = collabs.filter(u => isAbsentAujourdHui(u.id)).length;
   const pendingAbsences = store.absences().filter(a => a.statut === 'en_attente').length;
+  const issues = getPointageIssuesDuJour();
 
   const main = document.getElementById('main-content');
   main.innerHTML = `
@@ -3029,6 +3068,11 @@ function renderPagePresenceRT() {
       ${pendingAbsences > 0 ? `<button class="btn btn-amber btn-sm" onclick="navigateTo('conges-admin')">⏳ ${pendingAbsences} demande(s) à valider</button>` : ''}
     </div>
     <div class="page-body">
+      ${(issues.retards.length > 0 || issues.oublis.length > 0) ? `
+      <div class="alert alert-warning" style="margin-bottom:16px">
+        ${issues.retards.length > 0 ? `⏰ <strong>${issues.retards.length}</strong> collaborateur(s) en retard (pas encore pointé) — ${issues.retards.map(u=>esc(u.prenom)+' '+esc(u.nom)).join(', ')}<br>` : ''}
+        ${issues.oublis.length > 0 ? `❓ <strong>${issues.oublis.length}</strong> sortie(s) non pointée(s) — ${issues.oublis.map(u=>esc(u.prenom)+' '+esc(u.nom)).join(', ')}` : ''}
+      </div>` : ''}
       <!-- Stats -->
       <div class="stats-grid">
         <div class="stat-card green">
@@ -3047,6 +3091,11 @@ function renderPagePresenceRT() {
           <div class="stat-sub">sur ${formateurs.length}</div>
         </div>
         <div class="stat-card amber">
+          <div class="stat-label">Retards / Oublis</div>
+          <div class="stat-value amber">${issues.retards.length + issues.oublis.length}</div>
+          <div class="stat-sub">${issues.retards.length} retard(s) · ${issues.oublis.length} oubli(s)</div>
+        </div>
+        <div class="stat-card amber">
           <div class="stat-label">Demandes en attente</div>
           <div class="stat-value amber">${pendingAbsences}</div>
           <div class="stat-sub">à valider</div>
@@ -3059,7 +3108,7 @@ function renderPagePresenceRT() {
           <button class="btn btn-ghost btn-sm" onclick="renderPagePresenceRT()">🔄 Actualiser</button>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Collaborateur</th><th>Fonction</th><th>Statut</th><th>Arrivée</th><th>Heures/jour</th><th>Activité du jour</th></tr></thead>
+          <thead><tr><th>Collaborateur</th><th>Fonction</th><th>Statut</th><th>Arrivée</th><th>Heures/jour</th><th>Activité du jour</th><th>Actions</th></tr></thead>
           <tbody>${collabs.map(u => {
             const pts = getPointagesUserDay(u.id, today).sort((a,b)=>a.timestamp-b.timestamp);
             const isIn = pts.length > 0 && pts[pts.length-1].type === 'entree';
@@ -3072,13 +3121,27 @@ function renderPagePresenceRT() {
               : '—';
 
             let statut, statutClass;
+            const now = new Date();
+            const jourOuvre = now.getDay() !== 0 && now.getDay() !== 6;
+            const settingsRT = store.settings();
+            const [hD,mD] = (settingsRT.heureDebut||'08:00').split(':').map(Number);
+            const [hF,mF] = (settingsRT.heureFin||'16:00').split(':').map(Number);
+            const seuilRetardRT = new Date(now); seuilRetardRT.setHours(hD, mD+RETARD_TOLERANCE_MIN, 0, 0);
+            const seuilOubliRT  = new Date(now); seuilOubliRT.setHours(hF, mF+OUBLI_SORTIE_TOLERANCE_MIN, 0, 0);
+            const sortie = [...pts].reverse().find(p => p.type === 'sortie');
             if (absence) {
               const info = ABSENCE_TYPES[absence.type] || ABSENCE_TYPES.absence;
               statut = `${info.icon} ${info.label}`;
               statutClass = info.badge;
+            } else if (!entree && jourOuvre && now > seuilRetardRT) {
+              statut = '⏰ En retard';
+              statutClass = 'badge-amber';
             } else if (isIn) {
               statut = '✅ Présent';
               statutClass = 'badge-green';
+            } else if (entree && !sortie && jourOuvre && now > seuilOubliRT) {
+              statut = '❓ Sortie oubliée';
+              statutClass = 'badge-amber';
             } else if (pts.length > 0) {
               statut = '🚪 Parti';
               statutClass = 'badge-gray';
@@ -3094,6 +3157,7 @@ function renderPagePresenceRT() {
               <td class="td-mono text-xs">${entree && !absence ? entree.heure.slice(0,5) : '—'}</td>
               <td>${heures > 0 ? `<span class="badge badge-blue">${formatDuree(heures)}</span>` : '—'}</td>
               <td class="text-xs text-muted" style="max-width:160px">${tacheLabel}</td>
+              <td><button class="btn btn-ghost btn-xs presrt-correct" data-uid="${u.id}">✏️ Corriger</button></td>
             </tr>`;
           }).join('')}</tbody>
         </table></div>
@@ -3123,6 +3187,9 @@ function renderPagePresenceRT() {
         </table></div>
       </div>
     </div>`;
+  document.querySelectorAll('.presrt-correct').forEach(btn => {
+    btn.addEventListener('click', () => showModalCorrection(btn.getAttribute('data-uid'), today));
+  });
 }
 
 // ─── PAGE: GESTION CONGÉS & ABSENCES (Admin) ─────────────────────────────────
@@ -4624,6 +4691,15 @@ function renderPageDashboardDG() {
       }
     });
   }
+
+  // Alerte 4 : retards et oublis de pointage (voir getPointageIssuesDuJour)
+  const pointageIssues = getPointageIssuesDuJour();
+  pointageIssues.retards.forEach(u => {
+    alertes.push({ level:'warning', icon:'⏰', text:`${esc(u.prenom)} ${esc(u.nom)} — Retard, pas encore pointé (arrivée prévue ${settings.heureDebut||'08:00'})` });
+  });
+  pointageIssues.oublis.forEach(u => {
+    alertes.push({ level:'warning', icon:'❓', text:`${esc(u.prenom)} ${esc(u.nom)} — Sortie non pointée (arrivé à ${u._heureEntree})` });
+  });
 
   // ── Données graphiques — 12 dernières semaines
   const weeks = [];
