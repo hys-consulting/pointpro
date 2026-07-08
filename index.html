@@ -816,6 +816,19 @@ const store = {
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
+// Échappement HTML — indispensable avant d'insérer une valeur saisie par un
+// utilisateur (nom, note, message…) dans du innerHTML, sinon une entrée comme
+// <img src=x onerror=alert(1)> s'exécuterait dans le navigateur de qui la lit.
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // Postes réels des collaborateurs HYS Consulting
 const POSTES_HYS = [
   'Chargé de Pilotage et Coordination',
@@ -1068,7 +1081,7 @@ async function doChangePassword() {
   toast('Mot de passe défini.','success'); showApp();
 }
 function doLogout() {
-  if (currentUser) store.addAudit({ action:'LOGOUT', userId:currentUser.id, detail:`Déconnexion : ${currentUser.prenom} ${currentUser.nom}` });
+  if (currentUser) store.addAudit({ action:'LOGOUT', userId:currentUser.id, detail:`Déconnexion : ${esc(currentUser.prenom)} ${esc(currentUser.nom)}` });
   store.remove(SK.SESSION); currentUser = null; currentPage = null;
   ['login-username','login-password'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
   ['login-alert','login-locked','login-attempt-bar'].forEach(id => { const el = document.getElementById(id); if(el) el.style.display='none'; });
@@ -1259,7 +1272,7 @@ function renderDashboard() {
             const entree = pts.find(p => p.type === 'entree');
             const heures = calcHeuresJour(pts);
             return `<tr>
-              <td class="td-bold">${u.prenom} ${u.nom}</td>
+              <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td class="text-muted text-xs">${u.service||'—'}</td>
               <td><span class="badge ${isIn?'badge-green':'badge-gray'}">${isIn?'✅ Présent':'—'}</span></td>
               <td>${entree ? entree.heure.slice(0,5) : '—'}</td>
@@ -1310,7 +1323,7 @@ function renderPagePointage() {
     <div class="page-header">
       <div class="page-header-left">
         <h2>⏱️ Mon Pointage</h2>
-        <p>Bonjour ${currentUser.prenom} — ${today}</p>
+        <p>Bonjour ${esc(currentUser.prenom)} — ${today}</p>
       </div>
     </div>
     <div class="page-body">
@@ -1368,7 +1381,7 @@ async function doPointage(type) {
   const p = { id:uid(), userId:currentUser.id, type, date:dateStr(d), heure:timeStr(d), timestamp:d.getTime() };
   const pts = store.pointages(); pts.push(p); store.savePointages(pts);
   store.addAudit({ action:type==='entree'?'POINTAGE_ENTREE':'POINTAGE_SORTIE', userId:currentUser.id, detail:`${type==='entree'?'Entrée':'Sortie'} à ${p.heure} le ${p.date}` });
-  store.addNotif({ type:'pointage', userId:currentUser.id, message:`${currentUser.prenom} ${currentUser.nom} — ${type==='entree'?'Entrée':'Sortie'} à ${p.heure}` });
+  store.addNotif({ type:'pointage', userId:currentUser.id, message:`${esc(currentUser.prenom)} ${esc(currentUser.nom)} — ${type==='entree'?'Entrée':'Sortie'} à ${p.heure}` });
   toast(`${type==='entree'?'✅ Entrée':'🚪 Sortie'} enregistrée à ${p.heure.slice(0,5)}`,'success');
   renderPagePointage();
 }
@@ -1390,7 +1403,7 @@ function renderPageMonHistorique() {
   const main = document.getElementById('main-content');
   main.innerHTML = `
     <div class="page-header">
-      <div class="page-header-left"><h2>📋 Mon historique</h2><p>${currentUser.prenom} ${currentUser.nom}</p></div>
+      <div class="page-header-left"><h2>📋 Mon historique</h2><p>${esc(currentUser.prenom)} ${esc(currentUser.nom)}</p></div>
     </div>
     <div class="page-body">
       ${Object.keys(semaines).length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">📋</div><p>Aucun pointage enregistré</p></div></div>` :
@@ -1446,7 +1459,7 @@ function renderPageEmargement(session='matin', promotionFilter='') {
     <div class="page-header">
       <div class="page-header-left">
         <h2>✍️ Émargement stagiaires</h2>
-        <p>${today} · ${currentUser.prenom} ${currentUser.nom}</p>
+        <p>${today} · ${esc(currentUser.prenom)} ${esc(currentUser.nom)}</p>
       </div>
     </div>
     <div class="page-body">
@@ -1476,7 +1489,7 @@ function renderPageEmargement(session='matin', promotionFilter='') {
           ${stagiaires.map(s => {
             const present = existing?.presences?.[s.id] || false;
             return `<div class="emargement-row" id="row-${s.id}">
-              <span class="emargement-name">👤 ${s.prenom} ${s.nom}</span>
+              <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
               <button class="btn ${present?'btn-success':'btn-ghost'} btn-sm emarg-toggle" data-id="${s.id}" ${existing?.signatureFormateur?'disabled':''}>
                 ${present ? '✅ Présent' : '○ Absent'}
               </button>
@@ -1673,7 +1686,7 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
             <tbody>${stagiaires.map(s => {
               const present = e.presences?.[s.id] || false;
               return `<tr>
-                <td class="td-bold">${s.prenom} ${s.nom}</td>
+                <td class="td-bold">${esc(s.prenom)} ${esc(s.nom)}</td>
                 <td>${promoBadge(s.promotion)}</td>
                 <td><span class="badge ${present?'badge-green':'badge-red'}">${present?'✅ Présent':'❌ Absent'}</span></td>
               </tr>`;
@@ -1713,7 +1726,7 @@ function exportEmargementsCSV(date) {
     const formateur = store.users().find(u => u.id === e.formateurId);
     const stagiaires = store.stagiaires().filter(s => s.promotion === e.promotion);
     stagiaires.forEach(s => {
-      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${s.prenom} ${s.nom}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
+      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
     });
   });
   downloadCSV(rows, `emargements_${date}.csv`);
@@ -1756,7 +1769,7 @@ function printEmargement(emargId) {
     <table>
       <thead><tr><th>#</th><th>Nom</th><th>Prénom</th><th>Promotion</th><th>Présence</th></tr></thead>
       <tbody>${stagiaires.map((s,i) => `<tr>
-        <td>${i+1}</td><td>${s.nom}</td><td>${s.prenom}</td><td>${s.promotion}</td>
+        <td>${i+1}</td><td>${esc(s.nom)}</td><td>${esc(s.prenom)}</td><td>${s.promotion}</td>
         <td style="color:${e.presences?.[s.id]?'#15803d':'#b91c1c'};font-weight:700">${e.presences?.[s.id]?'✅ Présent':'❌ Absent'}</td>
       </tr>`).join('')}</tbody>
     </table>
@@ -1777,7 +1790,7 @@ function renderPageStagiaires(filterPromo='', search='') {
   const promotions = settings.promotions || [];
   let stagiaires = store.stagiaires();
   if (filterPromo) stagiaires = stagiaires.filter(s => s.promotion === filterPromo);
-  if (search) stagiaires = stagiaires.filter(s => `${s.prenom} ${s.nom}`.toLowerCase().includes(search.toLowerCase()));
+  if (search) stagiaires = stagiaires.filter(s => `${esc(s.prenom)} ${esc(s.nom)}`.toLowerCase().includes(search.toLowerCase()));
 
   const main = document.getElementById('main-content');
   main.innerHTML = `
@@ -1815,8 +1828,8 @@ function renderPageStagiaires(filterPromo='', search='') {
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="text-muted text-xs">${i+1}</td>
-          <td class="td-bold">${s.nom}</td>
-          <td>${s.prenom}</td>
+          <td class="td-bold">${esc(s.nom)}</td>
+          <td>${esc(s.prenom)}</td>
           <td>${promoBadge(s.promotion)}</td>
           <td class="text-xs text-muted">${s.entreprise||'—'}</td>
           <td><span class="badge ${s.statut==='actif'?'badge-green':'badge-gray'}">${s.statut==='actif'?'Actif':'Inactif'}</span></td>
@@ -1886,10 +1899,10 @@ function showModalEditStagiaire(id) {
   const s = store.stagiaires().find(x => x.id === id); if (!s) return;
   const settings = store.settings();
   const promotions = settings.promotions || [];
-  openModal(`✏️ Modifier — ${s.prenom} ${s.nom}`, `
+  openModal(`✏️ Modifier — ${esc(s.prenom)} ${esc(s.nom)}`, `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="form-group"><label>Prénom</label><input id="es-prenom" class="form-control" value="${s.prenom}"></div>
-      <div class="form-group"><label>Nom</label><input id="es-nom" class="form-control" value="${s.nom}"></div>
+      <div class="form-group"><label>Prénom</label><input id="es-prenom" class="form-control" value="${esc(s.prenom)}"></div>
+      <div class="form-group"><label>Nom</label><input id="es-nom" class="form-control" value="${esc(s.nom)}"></div>
     </div>
     <div class="form-group"><label>Promotion</label>
       <select id="es-promo" class="form-control">
@@ -2039,7 +2052,7 @@ function renderPagePointageAdmin(filterDate='', filterUser='') {
         <input type="date" class="form-control" id="pt-date" value="${date}" style="max-width:160px">
         <select class="form-control" id="pt-user" style="max-width:200px">
           <option value="">Tous les utilisateurs</option>
-          ${users.map(u => `<option value="${u.id}" ${filterUser===u.id?'selected':''}>${u.prenom} ${u.nom}</option>`).join('')}
+          ${users.map(u => `<option value="${u.id}" ${filterUser===u.id?'selected':''}>${esc(u.prenom)} ${esc(u.nom)}</option>`).join('')}
         </select>
         <button class="btn btn-ghost btn-sm" id="pt-apply">Filtrer</button>
       </div>
@@ -2063,7 +2076,7 @@ function renderPagePointageAdmin(filterDate='', filterUser='') {
     const dur = calcHeuresJour(sorted);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="td-bold">${u.prenom} ${u.nom}</td>
+      <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
       <td class="text-xs"><span class="badge badge-gray">${ROLE_LABELS[u.role]||u.role}</span></td>
       <td>${entree ? entree.heure.slice(0,5) : '<span class="text-muted">—</span>'}</td>
       <td>${sortie ? sortie.heure.slice(0,5) : '<span class="text-muted">—</span>'}</td>
@@ -2086,7 +2099,7 @@ function showModalCorrection(userId, date) {
   const u = store.users().find(x => x.id === userId); if (!u) return;
   const pts = getPointagesUserDay(userId, date);
   const sorted = [...pts].sort((a,b)=>a.timestamp-b.timestamp);
-  openModal(`✏️ Corriger — ${u.prenom} ${u.nom} · ${date}`, `
+  openModal(`✏️ Corriger — ${esc(u.prenom)} ${esc(u.nom)} · ${date}`, `
     <div class="alert alert-warning">⚠️ Toute correction est tracée dans le journal d'audit.</div>
     <div class="form-group"><label>Entrée</label>
       <input id="corr-entree" type="time" class="form-control" style="max-width:140px" value="${sorted.find(p=>p.type==='entree')?.heure.slice(0,5)||''}">
@@ -2114,7 +2127,7 @@ function showModalCorrection(userId, date) {
           allPts.push({ id:uid(), userId, type:'sortie', date, heure:sortieVal+':00', timestamp:ts, correctedBy:currentUser.id });
         }
         store.savePointages(allPts);
-        store.addAudit({ action:'CORRECTION_POINTAGE', userId:currentUser.id, detail:`Correction pointage ${u.prenom} ${u.nom} (${date}) — ${motif}` });
+        store.addAudit({ action:'CORRECTION_POINTAGE', userId:currentUser.id, detail:`Correction pointage ${esc(u.prenom)} ${esc(u.nom)} (${date}) — ${motif}` });
         closeModal(); toast('Pointage corrigé.','success');
         renderPagePointageAdmin(date, '');
       }}
@@ -2129,7 +2142,7 @@ function exportPointagesCSV(date) {
     const sorted = [...pts].sort((a,b)=>a.timestamp-b.timestamp);
     const entree = sorted.find(p=>p.type==='entree');
     const sortie = [...sorted].reverse().find(p=>p.type==='sortie');
-    rows.push([date, `${u.prenom} ${u.nom}`, ROLE_LABELS[u.role]||u.role, entree?.heure.slice(0,5)||'', sortie?.heure.slice(0,5)||'', calcHeuresJour(sorted)]);
+    rows.push([date, `${esc(u.prenom)} ${esc(u.nom)}`, ROLE_LABELS[u.role]||u.role, entree?.heure.slice(0,5)||'', sortie?.heure.slice(0,5)||'', calcHeuresJour(sorted)]);
   });
   downloadCSV(rows, `pointages_${date}.csv`);
   toast('Export CSV pointages.','success');
@@ -2149,8 +2162,8 @@ function renderPageUtilisateurs() {
         <div class="table-wrap"><table>
           <thead><tr><th>Identifiant</th><th>Nom</th><th>Rôle</th><th>Spécialité</th><th>Statut</th><th>Actions</th></tr></thead>
           <tbody>${users.map(u => `<tr>
-            <td class="td-mono text-xs">${u.username}</td>
-            <td class="td-bold">${u.prenom} ${u.nom}</td>
+            <td class="td-mono text-xs">${esc(u.username)}</td>
+            <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
             <td><span class="badge badge-blue text-xs">${ROLE_LABELS[u.role]||u.role}</span></td>
             <td class="text-xs text-muted">${u.service||'—'}</td>
             <td><span class="badge ${u.statut==='actif'?'badge-green':'badge-gray'}">${u.statut==='actif'?'Actif':'Inactif'}</span></td>
@@ -2227,10 +2240,10 @@ function showModalAddUser() {
 
 function showModalEditUser(id) {
   const u = store.users().find(x => x.id === id); if (!u) return;
-  openModal(`✏️ Modifier — ${u.prenom} ${u.nom}`, `
+  openModal(`✏️ Modifier — ${esc(u.prenom)} ${esc(u.nom)}`, `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="form-group"><label>Prénom</label><input id="eu-prenom" class="form-control" value="${u.prenom}"></div>
-      <div class="form-group"><label>Nom</label><input id="eu-nom" class="form-control" value="${u.nom}"></div>
+      <div class="form-group"><label>Prénom</label><input id="eu-prenom" class="form-control" value="${esc(u.prenom)}"></div>
+      <div class="form-group"><label>Nom</label><input id="eu-nom" class="form-control" value="${esc(u.nom)}"></div>
     </div>
     <div class="form-group"><label>Rôle</label>
       <select id="eu-role" class="form-control" ${u.id===currentUser.id?'disabled':''}>
@@ -2272,7 +2285,7 @@ function showModalEditUser(id) {
 
 function showModalResetPwd(id) {
   const u = store.users().find(x => x.id === id); if (!u) return;
-  openModal(`🔑 Réinitialiser MDP — ${u.prenom} ${u.nom}`, `
+  openModal(`🔑 Réinitialiser MDP — ${esc(u.prenom)} ${esc(u.nom)}`, `
     <div class="alert alert-info">L'utilisateur changera son mot de passe à la prochaine connexion.</div>
     <div class="form-group" style="margin-top:12px"><label>Nouveau mot de passe temporaire *</label><input id="rp-pwd" class="form-control" type="password"></div>
     <div class="form-group"><label>Confirmer *</label><input id="rp-pwd2" class="form-control" type="password"></div>
@@ -2287,7 +2300,7 @@ function showModalResetPwd(id) {
         const hash = await hashPassword(p1);
         const users = store.users(), i = users.findIndex(x => x.id === id);
         users[i].password = hash; users[i].firstLogin = true; store.saveUsers(users);
-        store.addAudit({ action:'PWD_RESET', userId:currentUser.id, detail:`Reset MDP pour "${u.username}"` });
+        store.addAudit({ action:'PWD_RESET', userId:currentUser.id, detail:`Reset MDP pour "${esc(u.username)}"` });
         closeModal(); toast('MDP réinitialisé.','success');
       }}
     ]);
@@ -2316,8 +2329,8 @@ function renderPageAudit(page=0) {
             return `<tr>
               <td class="td-mono text-xs">${new Date(l.ts).toLocaleString('fr-FR')}</td>
               <td><code style="font-size:11px">${l.action}</code></td>
-              <td class="text-xs">${u ? u.prenom+' '+u.nom : l.userId||'système'}</td>
-              <td class="text-xs text-muted">${(l.detail||'').slice(0,80)}</td>
+              <td class="text-xs">${u ? esc(u.prenom+' '+u.nom) : esc(l.userId)||'système'}</td>
+              <td class="text-xs text-muted">${esc((l.detail||'').slice(0,80))}</td>
             </tr>`;
           }).join('')||`<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text3)">Aucun événement</td></tr>`}
           </tbody>
@@ -2402,7 +2415,7 @@ function renderPageExport() {
       store.emargements().forEach(e => {
         const fmtr = store.users().find(u => u.id === e.formateurId);
         store.stagiaires().filter(s => s.promotion === e.promotion).forEach(s => {
-          rows.push([e.date, e.session, e.promotion, fmtr?fmtr.prenom+' '+fmtr.nom:'', `${s.prenom} ${s.nom}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
+          rows.push([e.date, e.session, e.promotion, fmtr?fmtr.prenom+' '+fmtr.nom:'', `${esc(s.prenom)} ${esc(s.nom)}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
         });
       });
       downloadCSV(rows, `emargements_${dateStr(new Date())}.csv`); toast('Export émargements.','success');
@@ -2968,7 +2981,7 @@ function showModalNewAbsence() {
         store.addAudit({ action:'ABSENCE_DEMANDE', userId:currentUser.id,
           detail:`${ABSENCE_TYPES[type]?.label} du ${debut} au ${fin} (${jours} j)` });
         store.addNotif({ type:'conge_demande', userId:currentUser.id,
-          message:`${currentUser.prenom} ${currentUser.nom} demande ${ABSENCE_TYPES[type]?.label} du ${debut} au ${fin} (${jours} j)` });
+          message:`${esc(currentUser.prenom)} ${esc(currentUser.nom)} demande ${ABSENCE_TYPES[type]?.label} du ${debut} au ${fin} (${jours} j)` });
         closeModal(); toast('Demande envoyée.','success'); renderSidebar(); renderPageMesConges();
       }}
     ]);
@@ -3075,7 +3088,7 @@ function renderPagePresenceRT() {
             }
 
             return `<tr>
-              <td class="td-bold">${u.prenom} ${u.nom}</td>
+              <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td class="text-xs text-muted">${u.service||'—'}</td>
               <td><span class="badge ${statutClass}">${statut}</span></td>
               <td class="td-mono text-xs">${entree && !absence ? entree.heure.slice(0,5) : '—'}</td>
@@ -3099,7 +3112,7 @@ function renderPagePresenceRT() {
               const entree = pts.find(p => p.type === 'entree');
               const heures = calcHeuresJour(pts);
               return `<tr>
-                <td class="td-bold">${u.prenom} ${u.nom}</td>
+                <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
                 <td class="text-xs text-muted">${u.service||'—'}</td>
                 <td><span class="badge ${isIn?'badge-green':'badge-gray'}">${isIn?'✅ Présent':'—'}</span></td>
                 <td class="td-mono text-xs">${entree ? entree.heure.slice(0,5) : '—'}</td>
@@ -3283,7 +3296,7 @@ function renderPageRapportMensuel(filterMonth='') {
             tachesMois.forEach(t => { totauxTaches[t.type] = (totauxTaches[t.type]||0) + (t.dureeMin||0); });
             const topTache = Object.entries(totauxTaches).sort((a,b)=>b[1]-a[1])[0];
             return `<tr>
-              <td class="td-bold">${u.prenom} ${u.nom}</td>
+              <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td class="text-xs text-muted">${u.service||'—'}</td>
               <td>${joursPointes}<span class="text-muted text-xs">/${joursOuvrablesMois}</span></td>
               <td><strong>${formatDuree(totalMin)}</strong></td>
@@ -3305,7 +3318,7 @@ function renderPageRapportMensuel(filterMonth='') {
           <tbody>${collabs.map(u => {
             const s = getSoldeComplet(u.id);
             return `<tr>
-              <td class="td-bold">${u.prenom} ${u.nom}</td>
+              <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td>${s.soldeN1} j</td>
               <td>${s.acquis} j</td>
               <td><span class="badge badge-amber">${s.pris} j</span></td>
@@ -3333,7 +3346,7 @@ function exportRapportCSV(ym, collabs, days) {
     const absencesMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && a.dateDebut.startsWith(ym));
     const joursAbsents = absencesMois.reduce((a,b)=>a+(b.joursOuvrables||0),0);
     const solde = getSoldeComplet(u.id);
-    rows.push([`${u.prenom} ${u.nom}`, u.service||'', `${joursPointes}/${joursOuvrablesMois}`, totalMin, joursAbsents, solde.total]);
+    rows.push([`${esc(u.prenom)} ${esc(u.nom)}`, u.service||'', `${joursPointes}/${joursOuvrablesMois}`, totalMin, joursAbsents, solde.total]);
   });
   downloadCSV(rows, `rapport_mensuel_${ym}.csv`);
   toast('Rapport mensuel exporté.','success');
@@ -3481,7 +3494,7 @@ async function generatePDFEmargement(emargId) {
     pdfLabel(doc, 'Organisme', settings.organisation || 'HYS Consulting', M + 5, y);
     pdfLabel(doc, 'Date', emarg.date, M + 5 + (W/2 - M), y);
     y += 7;
-    pdfLabel(doc, 'Formateur', formateur ? `${formateur.prenom} ${formateur.nom}` : '—', M + 5, y);
+    pdfLabel(doc, 'Formateur', formateur ? `${esc(formateur.prenom)} ${esc(formateur.nom)}` : '—', M + 5, y);
     pdfLabel(doc, 'Session', sessionInfo.label, M + 5 + (W/2 - M), y);
     y += 7;
     pdfLabel(doc, 'Promotion', emarg.promotion || '—', M + 5, y);
@@ -3655,7 +3668,7 @@ async function generatePDFConvocation(formateurId, semaineCfaId) {
     // Civilité formateur
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
-    doc.text(`${formateur.prenom} ${formateur.nom}`, W - M - 60, y);
+    doc.text(`${esc(formateur.prenom)} ${esc(formateur.nom)}`, W - M - 60, y);
     doc.setFontSize(8);
     doc.setTextColor(80, 80, 80);
     doc.text(formateur.service || 'Formateur externe', W - M - 60, y + 6);
@@ -3663,7 +3676,7 @@ async function generatePDFConvocation(formateurId, semaineCfaId) {
 
     doc.setTextColor(30, 30, 30);
     doc.setFontSize(10);
-    const intro = `Madame, Monsieur ${formateur.nom},`;
+    const intro = `Madame, Monsieur ${esc(formateur.nom)},`;
     doc.text(intro, M, y); y += 8;
 
     const body1 = `Nous avons le plaisir de vous convoquer pour assurer une intervention de formation dans le cadre de notre programme d'apprentissage auprès de la promotion ${semaine.promotion}.`;
@@ -3721,8 +3734,8 @@ async function generatePDFConvocation(formateurId, semaineCfaId) {
       doc.text(`Page ${p}/${totalPages}`, W - M, 295, { align: 'right' });
     }
 
-    doc.save(`convocation_${formateur.nom}_${semaine.debut}.pdf`);
-    store.addAudit({ action: 'PDF_CONVOCATION', userId: currentUser.id, detail: `Convocation ${formateur.prenom} ${formateur.nom} — semaine ${semaine.debut}` });
+    doc.save(`convocation_${esc(formateur.nom)}_${semaine.debut}.pdf`);
+    store.addAudit({ action: 'PDF_CONVOCATION', userId: currentUser.id, detail: `Convocation ${esc(formateur.prenom)} ${esc(formateur.nom)} — semaine ${semaine.debut}` });
     toast('Convocation PDF téléchargée.', 'success');
   } catch(err) {
     console.error(err);
@@ -3826,7 +3839,7 @@ function renderPagePlanningCFA(weekOffset = 0) {
                 return `<div style="background:var(--bg3);border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;border:1px solid var(--border)" onclick="showModalConvocation('${f.id}')">
                   <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--hys-green),var(--hys-green2));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0">${(f.prenom[0]||'')+(f.nom[0]||'')}</div>
                   <div style="min-width:0">
-                    <div style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.prenom} ${f.nom}</div>
+                    <div style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(f.prenom)} ${esc(f.nom)}</div>
                     <div style="font-size:10px;color:var(--text3)">${joursPres}/5 j · <span style="color:var(--hys-green)">Conv. PDF</span></div>
                   </div>
                 </div>`;
@@ -3875,7 +3888,7 @@ function renderProchainsSemaines() {
 function showModalConvocation(formateurId) {
   const formateur = store.users().find(u => u.id === formateurId); if (!formateur) return;
   const semaines = store.semainesCfa().sort((a, b) => a.debut.localeCompare(b.debut));
-  openModal(`🖨 Convocation — ${formateur.prenom} ${formateur.nom}`, `
+  openModal(`🖨 Convocation — ${esc(formateur.prenom)} ${esc(formateur.nom)}`, `
     <div class="alert alert-info" style="margin-bottom:12px">
       Sélectionnez la semaine CFA pour générer la convocation PDF.
     </div>
@@ -3940,7 +3953,7 @@ async function generatePDFPlanning(weekStart, weekEnd, semCfa) {
       doc.setTextColor(30, 30, 30);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.text(`${f.prenom} ${f.nom}`.slice(0, 20), M + 2, y + 9);
+      doc.text(`${esc(f.prenom)} ${esc(f.nom)}`.slice(0, 20), M + 2, y + 9);
 
       days.forEach((d, i) => {
         const pts = getPointagesUserDay(f.id, d.date).sort((a, b) => a.timestamp - b.timestamp);
@@ -4206,7 +4219,7 @@ function renderKioskSettings() {
       <div class="table-wrap"><table>
         <thead><tr><th>Utilisateur</th><th>Rôle</th><th>PIN actuel</th><th>Nouveau PIN</th><th></th></tr></thead>
         <tbody>${users.map(u => `<tr>
-          <td class="td-bold">${u.prenom} ${u.nom}</td>
+          <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
           <td class="text-xs"><span class="badge badge-gray">${ROLE_LABELS[u.role]||u.role}</span></td>
           <td><span class="badge ${u.pin ? 'badge-green' : 'badge-amber'}">${u.pin ? '••••' : 'Non défini'}</span></td>
           <td>
@@ -4590,15 +4603,15 @@ function renderPageDashboardDG() {
     const abs = store.absences().filter(a => a.userId === u.id && a.statut === 'approuve' && a.joursOuvrables >= 3 && a.dateDebut <= today && a.dateFin >= today);
     if (abs.length > 0) {
       const info = ABSENCE_TYPES[abs[0].type] || {};
-      alertes.push({ level:'warning', icon:'📅', text:`${u.prenom} ${u.nom} — ${info.label||'Absence'} longue (${abs[0].joursOuvrables} j) jusqu'au ${abs[0].dateFin}` });
+      alertes.push({ level:'warning', icon:'📅', text:`${esc(u.prenom)} ${esc(u.nom)} — ${info.label||'Absence'} longue (${abs[0].joursOuvrables} j) jusqu'au ${abs[0].dateFin}` });
     }
   });
 
   // Alerte 2 : solde CP < 5 jours
   collabs.forEach(u => {
     const s = getSoldeComplet(u.id);
-    if (s.total < 5 && s.total >= 0) alertes.push({ level:'warning', icon:'💳', text:`${u.prenom} ${u.nom} — Solde CP faible : ${s.total} jour(s) restant(s)` });
-    if (s.soldeN1 >= 15) alertes.push({ level:'danger', icon:'⚠️', text:`${u.prenom} ${u.nom} — Reliquat N-1 élevé : ${s.soldeN1} j à poser avant mai 2027` });
+    if (s.total < 5 && s.total >= 0) alertes.push({ level:'warning', icon:'💳', text:`${esc(u.prenom)} ${esc(u.nom)} — Solde CP faible : ${s.total} jour(s) restant(s)` });
+    if (s.soldeN1 >= 15) alertes.push({ level:'danger', icon:'⚠️', text:`${esc(u.prenom)} ${esc(u.nom)} — Reliquat N-1 élevé : ${s.soldeN1} j à poser avant mai 2027` });
   });
 
   // Alerte 3 : semaine CFA sans émargement signé
@@ -4793,7 +4806,7 @@ function renderPageDashboardDG() {
             ${heuresCollabs.map(h => {
               const pct = maxMin > 0 ? Math.round(h.min/maxMin*100) : 0;
               return `<div style="display:flex;align-items:center;gap:10px">
-                <div style="width:80px;font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.nom}</div>
+                <div style="width:80px;font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(h.nom)}</div>
                 <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden">
                   <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--hys-green),var(--hys-green2));border-radius:4px;transition:width .8s ease"></div>
                 </div>
@@ -4856,7 +4869,7 @@ function renderPageDashboardDG() {
               return `<div style="display:flex;align-items:center;gap:10px;padding:7px 10px;background:var(--bg3);border-radius:var(--radius-xs);border:1px solid var(--border)">
                 <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--hys-green),var(--hys-green2));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0">${(u.prenom[0]||'')+(u.nom[0]||'')}</div>
                 <div style="flex:1;min-width:0">
-                  <div style="font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${u.prenom} ${u.nom.split(' ')[0]}</div>
+                  <div style="font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(u.prenom)} ${u.nom.split(' ')[0]}</div>
                   <div style="font-size:10px;color:var(--text3)">${dot} ${statusTxt}${heures>0?' · '+formatDuree(heures):''}</div>
                 </div>
               </div>`;
@@ -4894,7 +4907,7 @@ function renderPageDashboardDG() {
                 const col = s.total>=10?'var(--hys-green)':s.total>=5?'var(--amber)':'var(--red)';
                 const warn= s.soldeN1>=15?'⚠️':s.total<5?'!':'';
                 return `<div style="display:flex;align-items:center;gap:8px">
-                  <div style="width:72px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${u.prenom}</div>
+                  <div style="width:72px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(u.prenom)}</div>
                   <div style="flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden">
                     <div style="height:100%;width:${pct}%;background:${col};border-radius:3px;transition:width .8s ease"></div>
                   </div>
@@ -5363,6 +5376,8 @@ function renderSupabaseSettings() {
 function generateSQLScript() {
   return `-- HYS PointPro v${APP_VERSION} — Script SQL Supabase
 -- Copiez-collez dans SQL Editor → Run
+-- Convention : colonnes en camelCase entre guillemets, pour correspondre
+-- exactement aux objets JS de l'application (pas de conversion à la volée).
 
 -- Activer les UUID
 create extension if not exists "pgcrypto";
@@ -5373,12 +5388,11 @@ create table if not exists hys_users (
   username text unique not null,
   password text not null,
   prenom text, nom text, role text,
-  service text, date_entree text,
+  service text, "dateEntree" text,
   statut text default 'actif',
-  first_login boolean default true,
+  "firstLogin" boolean default true,
   pin text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
+  "createdAt" timestamptz default now()
 );
 
 -- Table stagiaires
@@ -5387,42 +5401,45 @@ create table if not exists hys_stagiaires (
   prenom text, nom text,
   promotion text, entreprise text,
   statut text default 'actif',
-  created_at timestamptz default now()
+  "createdAt" timestamptz default now(),
+  "dateNaissance" text, email text, telephone text, adresse text,
+  "maitreApprentissage" text,
+  "dateDebutContrat" text, "dateFinContrat" text
 );
 
 -- Table pointages
 create table if not exists hys_pointages (
   id text primary key,
-  user_id text, type text,
+  "userId" text, type text,
   date text, heure text,
   timestamp bigint,
   source text default 'app',
-  corrected_by text,
-  created_at timestamptz default now()
+  "correctedBy" text,
+  "createdAt" timestamptz default now()
 );
 
 -- Table émargements
 create table if not exists hys_emargements (
   id text primary key,
-  formateur_id text, date text,
+  "formateurId" text, date text,
   session text, promotion text,
   presences jsonb default '{}',
-  signature_formateur text,
-  signed_at timestamptz,
-  created_at timestamptz default now()
+  "signatureFormateur" text,
+  "signedAt" timestamptz,
+  "createdAt" timestamptz default now()
 );
 
 -- Table absences
 create table if not exists hys_absences (
   id text primary key,
-  user_id text, type text,
-  date_debut text, date_fin text,
-  jours_ouvrables int,
+  "userId" text, type text,
+  "dateDebut" text, "dateFin" text,
+  "joursOuvrables" int,
   commentaire text,
   statut text default 'en_attente',
-  updated_by text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
+  "updatedBy" text,
+  "createdAt" timestamptz default now(),
+  "updatedAt" timestamptz default now()
 );
 
 -- Table semaines CFA
@@ -5430,31 +5447,44 @@ create table if not exists hys_semaines_cfa (
   id text primary key,
   debut text, fin text,
   promotion text, theme text,
-  created_at timestamptz default now()
+  "createdAt" timestamptz default now()
 );
 
 -- Table soldes CP
 create table if not exists hys_soldes_cp (
-  user_id text primary key,
-  reliquat_n1 numeric default 0,
-  updated_at timestamptz default now()
+  "userId" text primary key,
+  "reliquatN1" numeric default 0,
+  "updatedAt" timestamptz default now()
 );
 
 -- Table notifications
 create table if not exists hys_notifications (
   id text primary key,
-  type text, user_id text,
+  type text, "userId" text,
   message text, lu boolean default false,
   ts bigint, iso timestamptz,
-  created_at timestamptz default now()
+  "createdAt" timestamptz default now()
 );
 
 -- Table audit
 create table if not exists hys_audit (
   id text primary key,
-  action text, user_id text,
+  action text, "userId" text,
   detail text, ts bigint, iso timestamptz,
-  created_at timestamptz default now()
+  "createdAt" timestamptz default now()
+);
+
+-- Table modules de formation
+create table if not exists hys_modules (
+  id text primary key,
+  code text, titre text, couleur text,
+  promotions jsonb default '[]',
+  "dateDebut" text, "dateFin" text,
+  heures numeric,
+  "formateurId" text,
+  objectifs jsonb default '[]',
+  ordre int default 0,
+  "createdAt" timestamptz default now()
 );
 
 -- Table paramètres (ligne unique "global", horaires/config de l'organisme)
@@ -5468,8 +5498,8 @@ create table if not exists hys_settings (
 -- alter table hys_users enable row level security;
 
 -- Index utiles
-create index if not exists idx_pointages_user_date on hys_pointages(user_id, date);
-create index if not exists idx_absences_user on hys_absences(user_id);
+create index if not exists idx_pointages_user_date on hys_pointages("userId", date);
+create index if not exists idx_absences_user on hys_absences("userId");
 create index if not exists idx_emargements_date on hys_emargements(date);
 create index if not exists idx_audit_ts on hys_audit(ts desc);
 
@@ -6324,7 +6354,7 @@ function renderPageModules(filterPromo = '', search = '') {
   const promotions = settings.promotions || [];
   let modules = store.modules();
   if (filterPromo) modules = modules.filter(m => m.promotions?.includes(filterPromo));
-  if (search)      modules = modules.filter(m => `${m.titre} ${m.formateur}`.toLowerCase().includes(search.toLowerCase()));
+  if (search)      modules = modules.filter(m => `${esc(m.titre)} ${m.formateur}`.toLowerCase().includes(search.toLowerCase()));
   modules = modules.sort((a,b) => (a.ordre||0) - (b.ordre||0));
 
   const main = document.getElementById('main-content');
@@ -6372,7 +6402,7 @@ function renderPageModules(filterPromo = '', search = '') {
             <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
               <div>
                 <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Module ${m.code||m.id.slice(-4)}</div>
-                <div style="font-size:14px;font-weight:800;color:var(--text);margin-top:2px;line-height:1.3">${m.titre}</div>
+                <div style="font-size:14px;font-weight:800;color:var(--text);margin-top:2px;line-height:1.3">${esc(m.titre)}</div>
               </div>
               ${tauxPres!==null?`<span class="badge ${tauxPres>=80?'badge-green':tauxPres>=60?'badge-amber':'badge-red'}">${tauxPres}%</span>`:'<span class="badge badge-gray">—</span>'}
             </div>
@@ -6381,7 +6411,7 @@ function renderPageModules(filterPromo = '', search = '') {
             </div>
             <div style="font-size:11px;color:var(--text3);display:flex;flex-direction:column;gap:2px">
               ${m.dateDebut?`<span>📅 ${m.dateDebut} → ${m.dateFin||'…'}</span>`:''}
-              ${formateur?`<span>🎓 ${formateur.prenom} ${formateur.nom}</span>`:''}
+              ${formateur?`<span>🎓 ${esc(formateur.prenom)} ${esc(formateur.nom)}</span>`:''}
               ${m.heures?`<span>⏱ ${m.heures}h prévues</span>`:''}
               <span>📋 ${nbSessions} session(s)</span>
             </div>
@@ -6439,7 +6469,7 @@ function showModalAddModule() {
     <div class="form-group"><label>Formateur référent</label>
       <select id="nm-formateur" class="form-control">
         <option value="">-- Choisir --</option>
-        ${formateurs.map(f=>`<option value="${f.id}">${f.prenom} ${f.nom}${f.service?' · '+f.service:''}</option>`).join('')}
+        ${formateurs.map(f=>`<option value="${f.id}">${esc(f.prenom)} ${esc(f.nom)}${f.service?' · '+f.service:''}</option>`).join('')}
       </select>
     </div>
     <div class="form-group"><label>Objectifs pédagogiques</label>
@@ -6476,12 +6506,12 @@ function showModalEditModule(id) {
   const promotions = settings.promotions||[];
   const formateurs = store.users().filter(u=>u.role===ROLES.FORMATEUR&&u.statut==='actif');
 
-  openModal(`✏️ ${m.titre}`, `
+  openModal(`✏️ ${esc(m.titre)}`, `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="form-group"><label>Code</label><input id="em-code" class="form-control" value="${m.code||''}"></div>
       <div class="form-group"><label>Heures prévues</label><input id="em-heures" type="number" class="form-control" value="${m.heures||''}"></div>
     </div>
-    <div class="form-group"><label>Titre *</label><input id="em-titre" class="form-control" value="${m.titre}"></div>
+    <div class="form-group"><label>Titre *</label><input id="em-titre" class="form-control" value="${esc(m.titre)}"></div>
     <div class="form-group"><label>Promotions</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--bg3);border-radius:var(--radius-xs);border:1px solid var(--border)">
         ${promotions.map(p=>`<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
@@ -6495,7 +6525,7 @@ function showModalEditModule(id) {
     <div class="form-group"><label>Formateur référent</label>
       <select id="em-formateur" class="form-control">
         <option value="">-- Choisir --</option>
-        ${formateurs.map(f=>`<option value="${f.id}" ${m.formateurId===f.id?'selected':''}>${f.prenom} ${f.nom}</option>`).join('')}
+        ${formateurs.map(f=>`<option value="${f.id}" ${m.formateurId===f.id?'selected':''}>${esc(f.prenom)} ${esc(f.nom)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group"><label>Objectifs pédagogiques</label>
@@ -6616,7 +6646,7 @@ function renderPageNotifications() {
           return `<div class="notif-item" data-id="${n.id}" style="display:flex;align-items:flex-start;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;background:${n.lu?'transparent':'var(--hys-green-light)'};transition:background .2s">
             <span style="font-size:20px;flex-shrink:0">${icons[n.type]||'•'}</span>
             <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:${n.lu?'500':'700'};color:${n.lu?'var(--text2)':'var(--text)'}">${n.message}</div>
+              <div style="font-size:13px;font-weight:${n.lu?'500':'700'};color:${n.lu?'var(--text2)':'var(--text)'}">${esc(n.message)}</div>
               <div style="font-size:11px;color:var(--text3);margin-top:3px">${timeAgo(n.ts)}</div>
             </div>
             ${!n.lu?`<span style="width:8px;height:8px;border-radius:50%;background:var(--hys-green);flex-shrink:0;margin-top:4px"></span>`:''}
@@ -6680,17 +6710,17 @@ function openSearch() {
     const results = [];
     // Utilisateurs
     store.users().filter(u=>u.statut==='actif').forEach(u => {
-      if(`${u.prenom} ${u.nom} ${u.username} ${u.service||''}`.toLowerCase().includes(q))
-        results.push({ type:'user', icon:ROLE_LABELS[u.role]?.split(' ')[0]||'👤', label:`${u.prenom} ${u.nom}`, sub:u.service||ROLE_LABELS[u.role]||'', action:()=>navigateTo('utilisateurs') });
+      if(`${esc(u.prenom)} ${esc(u.nom)} ${esc(u.username)} ${u.service||''}`.toLowerCase().includes(q))
+        results.push({ type:'user', icon:ROLE_LABELS[u.role]?.split(' ')[0]||'👤', label:`${esc(u.prenom)} ${esc(u.nom)}`, sub:u.service||ROLE_LABELS[u.role]||'', action:()=>navigateTo('utilisateurs') });
     });
     // Stagiaires
     store.stagiaires().filter(s=>s.statut==='actif').forEach(s => {
-      if(`${s.prenom} ${s.nom} ${s.promotion||''} ${s.entreprise||''}`.toLowerCase().includes(q))
-        results.push({ type:'stagiaire', icon:'🎓', label:`${s.prenom} ${s.nom}`, sub:`${s.promotion||'—'} · ${s.entreprise||'—'}`, action:()=>navigateTo('stagiaires') });
+      if(`${esc(s.prenom)} ${esc(s.nom)} ${s.promotion||''} ${s.entreprise||''}`.toLowerCase().includes(q))
+        results.push({ type:'stagiaire', icon:'🎓', label:`${esc(s.prenom)} ${esc(s.nom)}`, sub:`${s.promotion||'—'} · ${s.entreprise||'—'}`, action:()=>navigateTo('stagiaires') });
     });
     // Modules
     store.modules().forEach(m => {
-      if(`${m.titre} ${m.code||''}`.toLowerCase().includes(q))
+      if(`${esc(m.titre)} ${m.code||''}`.toLowerCase().includes(q))
         results.push({ type:'module', icon:'📚', label:m.titre, sub:`${m.code||'—'} · ${(m.promotions||[]).join(', ')}`, action:()=>navigateTo('modules') });
     });
     // Semaines CFA
