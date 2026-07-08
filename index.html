@@ -5019,6 +5019,25 @@ const supa = {
   },
   _onSuccess() { this._failCount = 0; },
 
+  // Conversion de casse : les objets JS de l'app utilisent le camelCase
+  // (firstLogin, createdAt, dateEntree…) mais les colonnes Postgres sont en
+  // snake_case (first_login, created_at, date_entree…). PostgREST exige une
+  // correspondance EXACTE des clés du JSON envoyé avec les noms de colonnes —
+  // sans cette conversion, tout upsert contenant une clé camelCase échoue
+  // silencieusement (la ligne n'est jamais écrite côté serveur).
+  _toSnake(obj) {
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    const out = {};
+    for (const k in obj) out[k.replace(/[A-Z]/g, m => '_'+m.toLowerCase())] = obj[k];
+    return out;
+  },
+  _toCamel(obj) {
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    const out = {};
+    for (const k in obj) out[k.replace(/_([a-z0-9])/g, (_,c) => c.toUpperCase())] = obj[k];
+    return out;
+  },
+
   async select(table, filters = '') {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
@@ -5028,7 +5047,8 @@ const supa = {
       const res = await fetch(url, { headers: this._headers() });
       if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); this._onFailure(); return null; }
       this._onSuccess();
-      return await res.json();
+      const rows = await res.json();
+      return Array.isArray(rows) ? rows.map(r => this._toCamel(r)) : rows;
     } catch(e) { console.warn('[Supa] SELECT error:', e.message); this._onFailure(e); return null; }
   },
 
@@ -5036,7 +5056,7 @@ const supa = {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const body = Array.isArray(rows) ? rows : [rows];
+      const body = (Array.isArray(rows) ? rows : [rows]).map(r => this._toSnake(r));
       const res = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
         method: 'POST',
         headers: { ...this._headers(), 'Prefer': 'resolution=merge-duplicates,return=minimal' },
