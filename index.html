@@ -1378,11 +1378,11 @@ function renderPagePointage() {
       <div class="pointage-section">
         <button class="pointage-btn pointage-btn-entree" id="btn-entree" ${isIn?'disabled':''}>
           <span class="icon">✅</span><span>Pointer Entrée</span>
-          <span class="sub">08:00 · Alt+E</span>
+          <span class="sub">${store.settings().heureDebut||'08:00'} · Alt+E</span>
         </button>
         <button class="pointage-btn pointage-btn-sortie" id="btn-sortie" ${!isIn?'disabled':''}>
           <span class="icon">🚪</span><span>Pointer Sortie</span>
-          <span class="sub">17:00 · Alt+S</span>
+          <span class="sub">${store.settings().heureFin||'16:00'} · Alt+S</span>
         </button>
       </div>
       ${isFormateur() && semCfa ? `
@@ -2136,13 +2136,40 @@ function showModalCorrection(userId, date) {
   const u = store.users().find(x => x.id === userId); if (!u) return;
   const pts = getPointagesUserDay(userId, date);
   const sorted = [...pts].sort((a,b)=>a.timestamp-b.timestamp);
+  const entrees = sorted.filter(p => p.type === 'entree');
+  const sorties  = sorted.filter(p => p.type === 'sortie');
+  // 1er couple entrée/sortie = matin, 2e couple = après-midi (si présent)
+  const matinE = entrees[0]?.heure.slice(0,5) || '';
+  const matinS = sorties[0]?.heure.slice(0,5) || '';
+  const amE = entrees[1]?.heure.slice(0,5) || '';
+  const amS = sorties[1]?.heure.slice(0,5) || '';
+
   openModal(`✏️ Corriger — ${esc(u.prenom)} ${esc(u.nom)} · ${date}`, `
     <div class="alert alert-warning">⚠️ Toute correction est tracée dans le journal d'audit.</div>
-    <div class="form-group"><label>Entrée</label>
-      <input id="corr-entree" type="time" class="form-control" style="max-width:140px" value="${sorted.find(p=>p.type==='entree')?.heure.slice(0,5)||''}">
+    <p class="text-xs text-muted" style="margin-bottom:10px">Laissez un champ vide si la personne n'a pas travaillé sur cette plage (ex : absente l'après-midi).</p>
+    <div class="card" style="padding:12px;margin-bottom:10px;background:var(--bg2)">
+      <div class="card-title" style="margin-bottom:8px">🌅 Matin</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group"><label>Entrée</label>
+          <input id="corr-matin-entree" type="time" class="form-control" value="${matinE}" placeholder="${DEMIJOURNEES.matin.heureDebut}">
+        </div>
+        <div class="form-group"><label>Sortie</label>
+          <input id="corr-matin-sortie" type="time" class="form-control" value="${matinS}" placeholder="${DEMIJOURNEES.matin.heureFin}">
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-xs" id="corr-matin-defaut" type="button">↺ Remplir ${DEMIJOURNEES.matin.heureDebut}–${DEMIJOURNEES.matin.heureFin}</button>
     </div>
-    <div class="form-group"><label>Sortie</label>
-      <input id="corr-sortie" type="time" class="form-control" style="max-width:140px" value="${sorted.reverse().find(p=>p.type==='sortie')?.heure.slice(0,5)||''}">
+    <div class="card" style="padding:12px;margin-bottom:10px;background:var(--bg2)">
+      <div class="card-title" style="margin-bottom:8px">🌇 Après-midi</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group"><label>Entrée</label>
+          <input id="corr-am-entree" type="time" class="form-control" value="${amE}" placeholder="${DEMIJOURNEES.apresmidi.heureDebut}">
+        </div>
+        <div class="form-group"><label>Sortie</label>
+          <input id="corr-am-sortie" type="time" class="form-control" value="${amS}" placeholder="${DEMIJOURNEES.apresmidi.heureFin}">
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-xs" id="corr-am-defaut" type="button">↺ Remplir ${DEMIJOURNEES.apresmidi.heureDebut}–${DEMIJOURNEES.apresmidi.heureFin}</button>
     </div>
     <div class="form-group"><label>Motif de correction</label>
       <input id="corr-motif" class="form-control" placeholder="Raison de la correction…">
@@ -2150,19 +2177,21 @@ function showModalCorrection(userId, date) {
     [
       { label:'Annuler', cls:'btn-ghost', action:closeModal },
       { label:'💾 Appliquer', cls:'btn-amber', action:() => {
-        const entreeVal = document.getElementById('corr-entree')?.value;
-        const sortieVal = document.getElementById('corr-sortie')?.value;
+        const me = document.getElementById('corr-matin-entree')?.value;
+        const ms = document.getElementById('corr-matin-sortie')?.value;
+        const ae = document.getElementById('corr-am-entree')?.value;
+        const as = document.getElementById('corr-am-sortie')?.value;
         const motif = document.getElementById('corr-motif')?.value?.trim()||'Correction admin';
-        // Supprimer pts existants du jour
+        // Supprimer pts existants du jour, reconstruire avec les 2 plages
         let allPts = store.pointages().filter(p => !(p.userId === userId && p.date === date));
-        if (entreeVal) {
-          const ts = new Date(date+'T'+entreeVal+':00').getTime();
-          allPts.push({ id:uid(), userId, type:'entree', date, heure:entreeVal+':00', timestamp:ts, correctedBy:currentUser.id });
-        }
-        if (sortieVal) {
-          const ts = new Date(date+'T'+sortieVal+':00').getTime();
-          allPts.push({ id:uid(), userId, type:'sortie', date, heure:sortieVal+':00', timestamp:ts, correctedBy:currentUser.id });
-        }
+        const addPt = (type, heure) => {
+          const ts = new Date(date+'T'+heure+':00').getTime();
+          allPts.push({ id:uid(), userId, type, date, heure:heure+':00', timestamp:ts, correctedBy:currentUser.id });
+        };
+        if (me) addPt('entree', me);
+        if (ms) addPt('sortie', ms);
+        if (ae) addPt('entree', ae);
+        if (as) addPt('sortie', as);
         store.savePointages(allPts);
         store.addAudit({ action:'CORRECTION_POINTAGE', userId:currentUser.id, detail:`Correction pointage ${esc(u.prenom)} ${esc(u.nom)} (${date}) — ${motif}` });
         closeModal(); toast('Pointage corrigé.','success');
@@ -2170,6 +2199,14 @@ function showModalCorrection(userId, date) {
         else renderPagePointageAdmin(date, '');
       }}
     ]);
+  document.getElementById('corr-matin-defaut')?.addEventListener('click', () => {
+    document.getElementById('corr-matin-entree').value = DEMIJOURNEES.matin.heureDebut;
+    document.getElementById('corr-matin-sortie').value = DEMIJOURNEES.matin.heureFin;
+  });
+  document.getElementById('corr-am-defaut')?.addEventListener('click', () => {
+    document.getElementById('corr-am-entree').value = DEMIJOURNEES.apresmidi.heureDebut;
+    document.getElementById('corr-am-sortie').value = DEMIJOURNEES.apresmidi.heureFin;
+  });
 }
 
 function exportPointagesCSV(date) {
