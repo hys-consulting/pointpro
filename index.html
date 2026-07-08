@@ -5023,7 +5023,7 @@ const supa = {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const orderCol = table === 'hys_soldes_cp' ? 'userId' : 'createdAt';
+      const orderCol = table === 'hys_soldes_cp' ? 'userId' : (table === 'hys_settings' ? 'updated_at' : 'createdAt');
       const url = `${SUPA_URL}/rest/v1/${table}?${filters}&order=${orderCol}.desc.nullslast`;
       const res = await fetch(url, { headers: this._headers() });
       if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); this._onFailure(); return null; }
