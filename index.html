@@ -839,13 +839,47 @@ function downloadCSV(rows, filename) {
 }
 
 // ─── SÉCURITÉ ─────────────────────────────────────────────────────────────────
+// Format des hash : "pbkdf2:<iterations>:<selHex>:<hashHex>" (nouveau, sel par
+// utilisateur) ou "sha256:<hashHex>" (ancien format, conservé en lecture seule
+// pour ne pas invalider les comptes existants — remplacé automatiquement par
+// pbkdf2 au prochain changement de mot de passe de l'utilisateur).
+const PBKDF2_ITERATIONS = 100000;
+
+function bufToHex(buf) { return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+function hexToBuf(hex) { const a = new Uint8Array(hex.length/2); for(let i=0;i<a.length;i++) a[i]=parseInt(hex.substr(i*2,2),16); return a; }
+
 async function hashPassword(pwd) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(pwd), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, keyMaterial, 256
+  );
+  return `pbkdf2:${PBKDF2_ITERATIONS}:${bufToHex(salt)}:${bufToHex(bits)}`;
+}
+
+async function hashPasswordLegacySHA256(pwd) {
   const data = new TextEncoder().encode('HYS_PointPro_v1_' + pwd);
   const buf = await crypto.subtle.digest('SHA-256', data);
-  return 'sha256:' + Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  return 'sha256:' + bufToHex(buf);
 }
-async function verifyPassword(pwd, hash) {
-  return (await hashPassword(pwd)) === hash;
+
+async function verifyPassword(pwd, stored) {
+  if (!stored) return false;
+  if (stored.startsWith('pbkdf2:')) {
+    const [, iterStr, saltHex, hashHex] = stored.split(':');
+    const salt = hexToBuf(saltHex);
+    const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(pwd), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt, iterations: parseInt(iterStr, 10), hash: 'SHA-256' }, keyMaterial, 256
+    );
+    return bufToHex(bits) === hashHex;
+  }
+  if (stored.startsWith('sha256:')) {
+    // Ancien format (comptes créés avant la mise à jour sécurité) — vérifié
+    // pour compatibilité, mais plus jamais utilisé pour créer de nouveaux hash.
+    return (await hashPasswordLegacySHA256(pwd)) === stored;
+  }
+  return false;
 }
 function evalPasswordStrength(pwd) {
   let s = 0;
@@ -855,6 +889,13 @@ function evalPasswordStrength(pwd) {
   if (s <= 2) return { level:'Faible', color:'#ef4444', pct:25 };
   if (s <= 4) return { level:'Moyen', color:'#f59e0b', pct:60 };
   return { level:'Fort', color:'#22c55e', pct:100 };
+}
+// Génère un mot de passe temporaire aléatoire (remplace les défauts prévisibles
+// type "hys2026" / "admin123" codés en dur, visibles dans le code source public).
+function generateTempPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%';
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
 }
 function getLoginAttempts(u) { return (store.get(SK.LOGIN_ATTEMPTS)||{})[u]||{count:0,lockedUntil:0}; }
 function recordLoginAttempt(u, ok) {
@@ -3243,9 +3284,11 @@ async function seedCollabsHYS() {
   const existingCollabs = users.filter(u => u.role === ROLES.COLLAB);
   if (existingCollabs.length > 0) return; // déjà initialisé
 
-  const hash = await hashPassword('hys2026');
-  COLLABS_HYS_SEED.forEach(c => {
+  const credentials = []; // mots de passe temporaires générés, à communiquer manuellement
+  for (const c of COLLABS_HYS_SEED) {
     const username = c.prenom.toLowerCase().replace(/\s/g,'.')+'.'+(c.nom.split(' ')[0]||'').toLowerCase().replace(/[^a-z]/g,'');
+    const tempPwd = generateTempPassword();
+    const hash = await hashPassword(tempPwd);
     const userId = uid();
     users.push({
       id: userId, username, password: hash,
@@ -3254,11 +3297,16 @@ async function seedCollabsHYS() {
       dateEntree: c.dateEntree,
       statut: 'actif', firstLogin: true, createdAt: now(),
     });
+    credentials.push(`${username} / ${tempPwd}`);
     // Initialiser solde CP avec reliquat N-1 réel
     store.saveSoldeUser({ userId, reliquatN1: c.reliquatN1, updatedAt: now() });
-  });
+  }
   store.saveUsers(users);
   store.addAudit({ action:'SEED_COLLABS', userId:'system', detail:'6 collaborateurs HYS Consulting initialisés avec soldes CP réels' });
+  // Les identifiants générés ne sont affichés qu'une fois ici (jamais stockés en
+  // clair) — à communiquer individuellement et en privé à chaque collaborateur.
+  console.log('[HYS] Comptes créés — identifiants temporaires (à communiquer individuellement, jamais par ce canal) :\n' + credentials.join('\n'));
+  store.addNotif({ type:'info', message:`${credentials.length} comptes collaborateurs créés avec mots de passe temporaires aléatoires — voir la console pour les identifiants à distribuer individuellement.` });
 }
 
 
@@ -4411,7 +4459,8 @@ async function seedAliMoussa() {
   const users = store.users();
   const exists = users.find(u => u.username === 'ali.moussa');
   if (exists) return;
-  const hash = await hashPassword('hys2026');
+  const tempPwd = generateTempPassword();
+  const hash = await hashPassword(tempPwd);
   users.push({
     id: uid(),
     username: 'ali.moussa',
@@ -4429,7 +4478,7 @@ async function seedAliMoussa() {
   // Solde CP : CDI 1er juillet, reliquat N-1 = 0
   store.saveSoldeUser({ userId: users[users.length-1].id, reliquatN1: 0, updatedAt: now() });
   store.addAudit({ action: 'SEED_ALI_MOUSSA', userId: 'system', detail: 'ALI Moussa — Coordinateur Pédagogique CDI ajouté (1er juillet 2026)' });
-  store.addNotif({ type: 'info', message: 'ALI Moussa (Coordinateur Pédagogique) ajouté — identifiant : ali.moussa / mot de passe : hys2026' });
+  store.addNotif({ type: 'info', message: `ALI Moussa (Coordinateur Pédagogique) ajouté — identifiant : ali.moussa / mot de passe temporaire : ${tempPwd} (à communiquer en privé, changez-le après l'avoir noté)` });
 }
 
 
@@ -6687,7 +6736,8 @@ async function init() {
 async function initDefaultData() {
   const users = store.users();
   if (users.length === 0) {
-    const hash = await hashPassword('admin123');
+    const tempPwd = generateTempPassword();
+    const hash = await hashPassword(tempPwd);
     store.saveUsers([{
       id: uid(), username: 'admin.hys', password: hash,
       prenom: 'Admin', nom: 'HYS',
@@ -6702,8 +6752,9 @@ async function initDefaultData() {
       pauseDejeIner: 60,
       promotions: ['EPR1','EPR2','EPR3','APH1','APH2','CATL'],
     });
-    store.addAudit({ action:'INIT', userId:'system', detail:'HYS PointPro v1.1 initialisé — Compte admin créé (admin.hys / admin123)' });
-    store.addNotif({ type:'info', message:'Bienvenue sur HYS PointPro v1 ! Identifiant : admin.hys — MDP temporaire : admin123. Changez-le à la première connexion.' });
+    store.addAudit({ action:'INIT', userId:'system', detail:'HYS PointPro v1.1 initialisé — Compte admin créé (admin.hys)' });
+    console.log(`[HYS] Compte admin initial créé — identifiant : admin.hys / mot de passe temporaire : ${tempPwd}`);
+    store.addNotif({ type:'info', message:`Bienvenue sur HYS PointPro ! Identifiant : admin.hys — mot de passe temporaire généré aléatoirement (voir la console de ce premier appareil). Changez-le immédiatement à la première connexion.` });
   }
 }
 
