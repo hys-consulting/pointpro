@@ -5083,7 +5083,21 @@ const supa = {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const body = Array.isArray(rows) ? rows : [rows];
+      let body = Array.isArray(rows) ? rows : [rows];
+      // PostgREST refuse un batch dont les objets n'ont pas exactement les
+      // mêmes clés (erreur "All object keys must match"). Comme nos objets JS
+      // n'ont souvent que les clés effectivement renseignées (ex: un nouvel
+      // utilisateur sans "pin" pendant qu'un autre l'a), on complète chaque
+      // ligne avec toutes les clés de l'union, à null si absente.
+      if (body.length > 1) {
+        const allKeys = new Set();
+        for (const r of body) for (const k in r) allKeys.add(k);
+        body = body.map(r => {
+          const full = {};
+          for (const k of allKeys) full[k] = (k in r) ? r[k] : null;
+          return full;
+        });
+      }
       const res = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
         method: 'POST',
         headers: { ...this._headers(), 'Prefer': 'resolution=merge-duplicates,return=minimal' },
