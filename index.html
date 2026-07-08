@@ -4804,68 +4804,37 @@ function renderPageDashboardDG() {
 }
 
 // ─── SERVICE WORKER — MODE HORS-LIGNE ─────────────────────────────────────────
-// Le SW est enregistré dynamiquement via un Blob URL — pas besoin de fichier séparé.
-const SW_CODE = `
-const CACHE = 'hys-pointpro-v${APP_VERSION}';
-const ASSETS = [location.pathname || '/'];
-
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())
-  );
-});
-
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-  e.respondWith(
-    fetch(e.request)
-      .then(resp => {
-        if (resp && resp.status === 200 && resp.type === 'basic') {
-          const clone = resp.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-        }
-        return resp;
-      })
-      .catch(() => caches.match(e.request))
-  );
-});
-`;
-
+// Le SW doit être un fichier réel servi en HTTP(S) — les navigateurs refusent les
+// blob: URL pour les Service Workers (contrairement aux Web Workers classiques).
+// Voir sw.js à la racine du dépôt, à côté de index.html.
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) {
     console.log('[HYS] Service Worker non supporté');
     return;
   }
-  try {
-    const blob = new Blob([SW_CODE], { type: 'application/javascript' });
-    const swUrl = URL.createObjectURL(blob);
-    navigator.serviceWorker.register(swUrl, { scope: '/' })
-      .then(reg => {
-        console.log('[HYS] Service Worker enregistré ✅', reg.scope);
-        // Notify update available
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              store.addNotif({ type: 'info', message: 'Mise à jour disponible — rechargez la page pour l\'appliquer.' });
-              updateNotifBadge();
-            }
-          });
-        });
-      })
-      .catch(err => console.warn('[HYS] SW registration failed:', err));
-  } catch(err) {
-    // Blob SW not supported in all environments (e.g. file://)
-    console.warn('[HYS] SW Blob non supporté:', err.message);
+  // location.protocol file:// ne supporte pas les Service Workers
+  if (location.protocol === 'file:') {
+    console.log('[HYS] Service Worker désactivé (file://)');
+    return;
   }
+  // Portée = dossier courant (ex: /pointpro/), jamais '/' pour ne pas déborder
+  // sur d'autres apps hébergées sur le même domaine GitHub Pages.
+  const scopePath = location.pathname.replace(/[^/]*$/, '');
+  const swUrl = scopePath + 'sw.js';
+  navigator.serviceWorker.register(swUrl, { scope: scopePath })
+    .then(reg => {
+      console.log('[HYS] Service Worker enregistré ✅', reg.scope);
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            store.addNotif({ type: 'info', message: 'Mise à jour disponible — rechargez la page pour l\'appliquer.' });
+            updateNotifBadge();
+          }
+        });
+      });
+    })
+    .catch(err => console.warn('[HYS] SW registration failed:', err.message));
 }
 
 // Indicateur hors-ligne dans la sidebar
@@ -4897,43 +4866,77 @@ function initOfflineIndicator() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── CONFIGURATION SUPABASE ───────────────────────────────────────────────────
-// ⚠️  REMPLACEZ CES DEUX LIGNES AVEC VOS VALEURS SUPABASE
-const SUPA_URL = 'https://yxfcctwrxxtbyungrmmu.supabase.co';
-const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4ZmNjdHdyeHh0Ynl1bmdybW11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyODU3NzAsImV4cCI6MjA5Nzg2MTc3MH0.McQ5-6rybg6F2aRZ4mwQOS41zYsHDDYOCNQTKFusb2w';
+// Les identifiants sont saisis depuis Paramètres → Supabase (dans l'app) et
+// stockés en localStorage — plus besoin d'éditer le code source pour les changer.
+// Aucune valeur par défaut : tant que rien n'est configuré, aucun appel réseau
+// n'est tenté (voir supa._check()).
+const SUPA_CONFIG_KEY = 'hys_supa_config';
+const SUPA_MAX_CONSECUTIVE_FAILURES = 3; // coupe-circuit anti-spam
+
+function getSupaConfig() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SUPA_CONFIG_KEY));
+    return { url: (raw && raw.url) || '', key: (raw && raw.key) || '' };
+  } catch { return { url: '', key: '' }; }
+}
+function setSupaConfig(url, key) {
+  localStorage.setItem(SUPA_CONFIG_KEY, JSON.stringify({ url: (url||'').trim().replace(/\/+$/,''), key: (key||'').trim() }));
+  supa._disabled = false;
+  supa._failCount = 0;
+}
+function clearSupaConfig() {
+  localStorage.removeItem(SUPA_CONFIG_KEY);
+  supa._disabled = false;
+  supa._failCount = 0;
+}
 
 // ─── CLIENT SUPABASE LÉGER (sans SDK — fetch natif) ──────────────────────────
 const supa = {
-  _configured: false,
+  _failCount: 0,
+  _disabled: false, // coupe-circuit : plus d'appels après N échecs réseau consécutifs
 
   _check() {
-    if (!this._configured) {
-      this._configured = SUPA_URL !== 'VOTRE_PROJECT_URL' && SUPA_KEY !== 'VOTRE_ANON_PUBLIC_KEY';
-    }
-    return this._configured;
+    if (this._disabled) return false;
+    const { url, key } = getSupaConfig();
+    return !!(url && key && /^https:\/\/.+\.supabase\.co$/.test(url));
   },
 
   _headers() {
+    const { key } = getSupaConfig();
     return {
       'Content-Type':  'application/json',
-      'apikey':        SUPA_KEY,
-      'Authorization': 'Bearer ' + SUPA_KEY,
+      'apikey':        key,
+      'Authorization': 'Bearer ' + key,
       'Prefer':        'return=representation',
     };
   },
 
+  _onFailure(err) {
+    this._failCount++;
+    if (this._failCount >= SUPA_MAX_CONSECUTIVE_FAILURES) {
+      this._disabled = true;
+      console.warn(`[Supa] ${this._failCount} échecs réseau consécutifs — synchronisation désactivée pour cette session. Vérifiez l'URL/clé dans Paramètres → Supabase.`);
+      setSyncStatus('error');
+    }
+  },
+  _onSuccess() { this._failCount = 0; },
+
   async select(table, filters = '') {
     if (!this._check()) return null;
+    const { url: SUPA_URL } = getSupaConfig();
     try {
       const orderCol = table === 'hys_soldes_cp' ? 'userId' : 'createdAt';
       const url = `${SUPA_URL}/rest/v1/${table}?${filters}&order=${orderCol}.desc.nullslast`;
       const res = await fetch(url, { headers: this._headers() });
-      if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); return null; }
+      if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); this._onFailure(); return null; }
+      this._onSuccess();
       return await res.json();
-    } catch(e) { console.warn('[Supa] SELECT error:', e.message); return null; }
+    } catch(e) { console.warn('[Supa] SELECT error:', e.message); this._onFailure(e); return null; }
   },
 
   async upsert(table, rows) {
     if (!this._check()) return null;
+    const { url: SUPA_URL } = getSupaConfig();
     try {
       const body = Array.isArray(rows) ? rows : [rows];
       const res = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
@@ -4941,30 +4944,35 @@ const supa = {
         headers: { ...this._headers(), 'Prefer': 'resolution=merge-duplicates,return=minimal' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) { const err = await res.text(); console.warn(`[Supa] UPSERT ${table}:`, err); return null; }
+      if (!res.ok) { const err = await res.text(); console.warn(`[Supa] UPSERT ${table}:`, err); this._onFailure(); return null; }
+      this._onSuccess();
       return true;
-    } catch(e) { console.warn('[Supa] UPSERT error:', e.message); return null; }
+    } catch(e) { console.warn('[Supa] UPSERT error:', e.message); this._onFailure(e); return null; }
   },
 
   async delete(table, id) {
     if (!this._check()) return null;
+    const { url: SUPA_URL } = getSupaConfig();
     try {
       const res = await fetch(`${SUPA_URL}/rest/v1/${table}?id=eq.${id}`, {
         method: 'DELETE', headers: this._headers(),
       });
+      if (res.ok) this._onSuccess(); else this._onFailure();
       return res.ok;
-    } catch(e) { console.warn('[Supa] DELETE error:', e.message); return null; }
+    } catch(e) { console.warn('[Supa] DELETE error:', e.message); this._onFailure(e); return null; }
   },
 
   async rpc(fn, params = {}) {
     if (!this._check()) return null;
+    const { url: SUPA_URL } = getSupaConfig();
     try {
       const res = await fetch(`${SUPA_URL}/rest/v1/rpc/${fn}`, {
         method: 'POST', headers: this._headers(), body: JSON.stringify(params),
       });
-      if (!res.ok) return null;
+      if (!res.ok) { this._onFailure(); return null; }
+      this._onSuccess();
       return await res.json();
-    } catch(e) { return null; }
+    } catch(e) { this._onFailure(e); return null; }
   },
 
   isConfigured() { return this._check(); },
@@ -5022,7 +5030,10 @@ async function syncPull() {
   for (const m of SYNC_MAP) {
     const data = await supa.select(m.table);
     if (data !== null) {
-      store.set(m.sk, data);
+      // Écriture directe (setter non patché) : ces données viennent DE Supabase,
+      // pas besoin de les repousser aussitôt — l'ancien code créait une boucle
+      // pull → push inutile à chaque cycle de 3 minutes.
+      _storeSetOrig(m.sk, data);
       store.invalidate(m.sk);
     } else { ok = false; }
   }
@@ -5082,11 +5093,25 @@ const _syncTableMap = {
 };
 
 store.set = function(key, val) {
-  const result = _storeSetOrig(key, val);
   const table = _syncTableMap[key];
-  if (table && supa.isConfigured() && Array.isArray(val) && val.length > 0) {
-    // Push async, ne bloque pas l'UI
-    syncPush(table, val).catch(() => {});
+  // Diffing AVANT d'écraser le cache : un upsert seul ne supprime jamais les
+  // lignes retirées côté Supabase, et l'ancien code ignorait carrément les
+  // tableaux vides (donc "tout supprimer" ne se synchronisait jamais).
+  let removedIds = [];
+  if (table && supa.isConfigured() && Array.isArray(val)) {
+    const prevVal = store.get(key);
+    if (Array.isArray(prevVal)) {
+      const newIds = new Set(val.map(r => r && r.id).filter(Boolean));
+      removedIds = prevVal.filter(r => r && r.id && !newIds.has(r.id)).map(r => r.id);
+    }
+  }
+  const result = _storeSetOrig(key, val);
+  if (table && supa.isConfigured()) {
+    if (Array.isArray(val) && val.length > 0) {
+      // Push async, ne bloque pas l'UI
+      syncPush(table, val).catch(() => {});
+    }
+    removedIds.forEach(id => { supa.delete(table, id).catch(() => {}); });
   }
   return result;
 };
@@ -5120,13 +5145,25 @@ function renderSupabaseSettings() {
           : `⚠️ Supabase non configuré — les données restent locales uniquement.`}
       </div>
 
-      ${!isConfigured ? `
-      <div class="alert alert-info" style="margin-bottom:14px">
+      <div style="margin-bottom:16px">
+        <div class="card-title" style="margin-bottom:8px">Identifiants Supabase</div>
+        <p class="text-xs text-muted" style="margin-bottom:8px">Depuis votre projet Supabase → Settings → API : copiez "Project URL" et la clé "anon public".</p>
+        <div style="display:flex;flex-direction:column;gap:8px;max-width:480px">
+          <input type="text" id="supa-url-input" class="form-control" placeholder="https://xxxxxxxx.supabase.co" value="${getSupaConfig().url.replace(/"/g,'&quot;')}">
+          <input type="text" id="supa-key-input" class="form-control" placeholder="Clé anon public (eyJ...)" value="${getSupaConfig().key.replace(/"/g,'&quot;')}">
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" id="btn-supa-save">💾 Enregistrer</button>
+            ${isConfigured ? `<button class="btn btn-ghost btn-sm" id="btn-supa-clear">Désactiver la synchro</button>` : ''}
+          </div>
+        </div>
+      </div>
+
+      ${supa._disabled ? `
+      <div class="alert alert-error" style="margin-bottom:14px">
         <div style="font-size:12px">
-          <strong>Pour configurer :</strong><br>
-          1. Ouvrez ce fichier HTML dans un éditeur texte<br>
-          2. Trouvez les lignes <code>SUPA_URL</code> et <code>SUPA_KEY</code> tout en haut du script<br>
-          3. Remplacez par vos valeurs Supabase (Settings → API)
+          ⚠️ La synchronisation a été coupée automatiquement après plusieurs échecs réseau consécutifs
+          (URL/clé invalide, ou projet Supabase inaccessible/supprimé). Vérifiez les identifiants
+          ci-dessus puis cliquez "Enregistrer" pour réessayer.
         </div>
       </div>` : ''}
 
@@ -5353,6 +5390,25 @@ renderPageParametres = function() {
     card.appendChild(section.firstElementChild);
     renderSyncBadge();
 
+    document.getElementById('btn-supa-save')?.addEventListener('click', async () => {
+      const url = document.getElementById('supa-url-input')?.value || '';
+      const key = document.getElementById('supa-key-input')?.value || '';
+      if (!/^https:\/\/.+\.supabase\.co$/.test(url.trim())) {
+        toast('❌ URL invalide — attendu https://xxxxx.supabase.co', 'error'); return;
+      }
+      if (!key.trim()) { toast('❌ Clé anon manquante.', 'error'); return; }
+      setSupaConfig(url, key);
+      toast('✅ Identifiants enregistrés — tentative de connexion…', 'success');
+      const ok = await syncPull();
+      toast(ok ? '✅ Connecté à Supabase.' : '⚠️ Identifiants enregistrés mais connexion impossible — vérifiez URL/clé.', ok ? 'success' : 'warning');
+      renderPageParametres();
+    });
+    document.getElementById('btn-supa-clear')?.addEventListener('click', () => {
+      if (!confirm('Désactiver la synchronisation Supabase ? Les données resteront disponibles localement.')) return;
+      clearSupaConfig();
+      toast('Synchronisation désactivée — mode local uniquement.', 'info');
+      renderPageParametres();
+    });
     document.getElementById('btn-sync-pull')?.addEventListener('click', async () => {
       const ok = await syncPull();
       toast(ok ? '✅ Données rechargées depuis Supabase.' : '❌ Erreur de synchronisation.', ok ? 'success' : 'error');
