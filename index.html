@@ -816,6 +816,16 @@ const store = {
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
+// Postes réels des collaborateurs HYS Consulting
+const POSTES_HYS = [
+  'Chargé de Pilotage et Coordination',
+  'Responsable Pédagogique',
+  'Coordinateur Pédagogique',
+  'Chargé de Logistique Pédagogique',
+  'Conseillère en Insertion Professionnelle',
+  'Secrétaire Administrative',
+];
+
 // ─── CODE COULEUR PAR PROMOTION ────────────────────────────────────────────
 // Palette fixe pour les promotions connues + couleur dérivée (hash) en repli
 // pour toute nouvelle promotion, afin que chaque promo soit visuellement
@@ -2177,7 +2187,14 @@ function showModalAddUser() {
         <option value="${ROLES.ADMIN}">👑 Admin HYS</option>
       </select>
     </div>
-    <div class="form-group"><label>Spécialité / Service</label><input id="nu-service" class="form-control" placeholder="ex: Cuisine, Pédagogie…"></div>
+    <div class="form-group"><label>Poste</label>
+      <select id="nu-service" class="form-control">
+        <option value="">— Sélectionner —</option>
+        ${POSTES_HYS.map(p => `<option value="${p}">${p}</option>`).join('')}
+        <option value="__autre__">Autre (préciser)</option>
+      </select>
+      <input id="nu-service-autre" class="form-control" style="margin-top:6px;display:none" placeholder="Précisez le poste…">
+    </div>
     <div class="form-group"><label>Mot de passe temporaire *</label><input id="nu-pwd" class="form-control" type="password" placeholder="min. 8 caractères"></div>
     <div id="nu-err" style="display:none"></div>`,
     [
@@ -2187,7 +2204,8 @@ function showModalAddUser() {
         const nom = document.getElementById('nu-nom')?.value?.trim();
         const username = document.getElementById('nu-user')?.value?.trim();
         const role = document.getElementById('nu-role')?.value;
-        const service = document.getElementById('nu-service')?.value?.trim();
+        const serviceSel = document.getElementById('nu-service')?.value;
+        const service = serviceSel === '__autre__' ? (document.getElementById('nu-service-autre')?.value?.trim()||'') : (serviceSel||'');
         const pwd = document.getElementById('nu-pwd')?.value||'';
         const err = document.getElementById('nu-err');
         if (!prenom||!nom||!username||!pwd) { showAlert(err,'⚠️ Tous les champs marqués * sont obligatoires.','danger'); return; }
@@ -2201,6 +2219,10 @@ function showModalAddUser() {
         closeModal(); toast(`Compte "${username}" créé.`,'success'); renderPageUtilisateurs();
       }}
     ]);
+  document.getElementById('nu-service')?.addEventListener('change', (e) => {
+    const autreInput = document.getElementById('nu-service-autre');
+    if (autreInput) autreInput.style.display = e.target.value === '__autre__' ? 'block' : 'none';
+  });
 }
 
 function showModalEditUser(id) {
@@ -2217,7 +2239,14 @@ function showModalEditUser(id) {
         <option value="${ROLES.ADMIN}" ${u.role===ROLES.ADMIN?'selected':''}>👑 Admin HYS</option>
       </select>
     </div>
-    <div class="form-group"><label>Spécialité / Service</label><input id="eu-service" class="form-control" value="${u.service||''}"></div>`,
+    <div class="form-group"><label>Poste</label>
+      <select id="eu-service" class="form-control">
+        <option value="">— Sélectionner —</option>
+        ${POSTES_HYS.map(p => `<option value="${p}" ${u.service===p?'selected':''}>${p}</option>`).join('')}
+        <option value="__autre__" ${u.service && !POSTES_HYS.includes(u.service)?'selected':''}>Autre (préciser)</option>
+      </select>
+      <input id="eu-service-autre" class="form-control" style="margin-top:6px;display:${u.service && !POSTES_HYS.includes(u.service)?'block':'none'}" placeholder="Précisez le poste…" value="${u.service && !POSTES_HYS.includes(u.service)?u.service:''}">
+    </div>`,
     [
       { label:'Annuler', cls:'btn-ghost', action:closeModal },
       { label:'💾 Enregistrer', cls:'btn-primary', action:() => {
@@ -2225,7 +2254,8 @@ function showModalEditUser(id) {
         if (i >= 0) {
           users[i].prenom = document.getElementById('eu-prenom')?.value?.trim()||users[i].prenom;
           users[i].nom = document.getElementById('eu-nom')?.value?.trim()||users[i].nom;
-          users[i].service = document.getElementById('eu-service')?.value?.trim()||'';
+          const serviceSel = document.getElementById('eu-service')?.value;
+          users[i].service = serviceSel === '__autre__' ? (document.getElementById('eu-service-autre')?.value?.trim()||'') : (serviceSel||'');
           if (id !== currentUser.id) users[i].role = document.getElementById('eu-role')?.value||users[i].role;
           store.saveUsers(users);
           if (id === currentUser.id) { currentUser = users[i]; renderSidebar(); }
@@ -2234,6 +2264,10 @@ function showModalEditUser(id) {
         closeModal(); toast('Utilisateur modifié.','success'); renderPageUtilisateurs();
       }}
     ]);
+  document.getElementById('eu-service')?.addEventListener('change', (e) => {
+    const autreInput = document.getElementById('eu-service-autre');
+    if (autreInput) autreInput.style.display = e.target.value === '__autre__' ? 'block' : 'none';
+  });
 }
 
 function showModalResetPwd(id) {
@@ -5019,36 +5053,16 @@ const supa = {
   },
   _onSuccess() { this._failCount = 0; },
 
-  // Conversion de casse : les objets JS de l'app utilisent le camelCase
-  // (firstLogin, createdAt, dateEntree…) mais les colonnes Postgres sont en
-  // snake_case (first_login, created_at, date_entree…). PostgREST exige une
-  // correspondance EXACTE des clés du JSON envoyé avec les noms de colonnes —
-  // sans cette conversion, tout upsert contenant une clé camelCase échoue
-  // silencieusement (la ligne n'est jamais écrite côté serveur).
-  _toSnake(obj) {
-    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
-    const out = {};
-    for (const k in obj) out[k.replace(/[A-Z]/g, m => '_'+m.toLowerCase())] = obj[k];
-    return out;
-  },
-  _toCamel(obj) {
-    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
-    const out = {};
-    for (const k in obj) out[k.replace(/_([a-z0-9])/g, (_,c) => c.toUpperCase())] = obj[k];
-    return out;
-  },
-
   async select(table, filters = '') {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const orderCol = table === 'hys_soldes_cp' ? 'userId' : (table === 'hys_settings' ? 'updated_at' : 'createdAt');
+      const orderCol = table === 'hys_soldes_cp' ? 'userId' : (table === 'hys_settings' ? 'updatedAt' : 'createdAt');
       const url = `${SUPA_URL}/rest/v1/${table}?${filters}&order=${orderCol}.desc.nullslast`;
       const res = await fetch(url, { headers: this._headers() });
       if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); this._onFailure(); return null; }
       this._onSuccess();
-      const rows = await res.json();
-      return Array.isArray(rows) ? rows.map(r => this._toCamel(r)) : rows;
+      return await res.json();
     } catch(e) { console.warn('[Supa] SELECT error:', e.message); this._onFailure(e); return null; }
   },
 
@@ -5056,7 +5070,7 @@ const supa = {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const body = (Array.isArray(rows) ? rows : [rows]).map(r => this._toSnake(r));
+      const body = Array.isArray(rows) ? rows : [rows];
       const res = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
         method: 'POST',
         headers: { ...this._headers(), 'Prefer': 'resolution=merge-duplicates,return=minimal' },
@@ -5243,7 +5257,7 @@ store.set = function(key, val) {
   // Paramètres : objet unique (pas un tableau de lignes) — stocké dans une
   // seule ligne "global" de hys_settings, contrairement aux autres tables.
   if (key === SK.SETTINGS && supa.isConfigured() && val && typeof val === 'object') {
-    syncPush('hys_settings', [{ id: 'global', data: val, updated_at: new Date().toISOString() }]).catch(() => {});
+    syncPush('hys_settings', [{ id: 'global', data: val, updatedAt: new Date().toISOString() }]).catch(() => {});
   }
   return result;
 };
@@ -5447,7 +5461,7 @@ create table if not exists hys_audit (
 create table if not exists hys_settings (
   id text primary key default 'global',
   data jsonb,
-  updated_at timestamptz default now()
+  "updatedAt" timestamptz default now()
 );
 
 -- RLS : désactivé pour commencer (activer après tests)
@@ -5484,7 +5498,7 @@ async function syncPushAll() {
   }
   const settingsData = store.get(SK.SETTINGS);
   if (settingsData) {
-    const result = await supa.upsert('hys_settings', [{ id: 'global', data: settingsData, updated_at: new Date().toISOString() }]);
+    const result = await supa.upsert('hys_settings', [{ id: 'global', data: settingsData, updatedAt: new Date().toISOString() }]);
     if (!result) { ok = false; console.warn('[Supa] Push failed: hys_settings'); }
   }
   _lastSync = Date.now();
