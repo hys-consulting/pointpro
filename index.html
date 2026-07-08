@@ -6438,19 +6438,6 @@ let _realtimeChannels = [];
 function initSupabaseRealtime() {
   if (!supa.isConfigured() || !navigator.onLine) return;
 
-  // Tables à écouter en temps réel
-  const watchTables = ['hys_pointages', 'hys_absences', 'hys_emargements', 'hys_notifications'];
-
-  watchTables.forEach(table => {
-    const evtSource = new EventSource(
-      `${SUPA_URL}/realtime/v1/api/broadcast?apikey=${SUPA_KEY}`,
-      { withCredentials: false }
-    );
-    // Fallback polling si EventSource non supporté
-    evtSource.onerror = () => evtSource.close();
-    _realtimeChannels.push(evtSource);
-  });
-
   // Polling léger toutes les 30s pour les tables critiques
   window._realtimePoll = setInterval(async () => {
     if (!navigator.onLine || !supa.isConfigured()) return;
