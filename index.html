@@ -4901,12 +4901,23 @@ function clearSupaConfig() {
 }
 
 // ─── CLIENT SUPABASE LÉGER (sans SDK — fetch natif) ──────────────────────────
+const SUPA_DISABLE_COOLDOWN_MS = 5 * 60 * 1000; // réessai auto après 5 min
 const supa = {
   _failCount: 0,
-  _disabled: false, // coupe-circuit : plus d'appels après N échecs réseau consécutifs
+  _disabled: false,   // coupe-circuit : plus d'appels après N échecs réseau consécutifs
+  _disabledAt: 0,
 
   _check() {
-    if (this._disabled) return false;
+    if (this._disabled) {
+      // Cooldown écoulé (ex: projet Supabase qui vient de se réveiller après une
+      // pause) → on redonne une chance plutôt que de rester bloqué toute la session.
+      if (Date.now() - this._disabledAt > SUPA_DISABLE_COOLDOWN_MS) {
+        this._disabled = false;
+        this._failCount = 0;
+      } else {
+        return false;
+      }
+    }
     const { url, key } = getSupaConfig();
     return !!(url && key && /^https:\/\/.+\.supabase\.co$/.test(url));
   },
@@ -4925,7 +4936,8 @@ const supa = {
     this._failCount++;
     if (this._failCount >= SUPA_MAX_CONSECUTIVE_FAILURES) {
       this._disabled = true;
-      console.warn(`[Supa] ${this._failCount} échecs réseau consécutifs — synchronisation désactivée pour cette session. Vérifiez l'URL/clé dans Paramètres → Supabase.`);
+      this._disabledAt = Date.now();
+      console.warn(`[Supa] ${this._failCount} échecs réseau consécutifs — synchronisation mise en pause (nouvelle tentative auto dans 5 min, ou immédiatement via Paramètres → Supabase).`);
       setSyncStatus('error');
     }
   },
