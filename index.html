@@ -750,6 +750,7 @@ const SK = {
   SEMAINES_CFA: 'hys_semaines_cfa',
   NOTIFICATIONS:'hys_notifs',
   OBJECTIFS:    'hys_objectifs',
+  MESSAGES:     'hys_messages',
   LOGIN_ATTEMPTS:'hys_login_attempts',
 };
 
@@ -776,6 +777,8 @@ const store = {
   saveNotifs(n)     { this.set(SK.NOTIFICATIONS, n); updateNotifBadge(); },
   objectifs()       { return this.get(SK.OBJECTIFS) || []; },
   saveObjectifs(o)  { this.set(SK.OBJECTIFS, o); },
+  messages()        { return this.get(SK.MESSAGES) || []; },
+  saveMessages(m)   { this.set(SK.MESSAGES, m); },
   audit()           { return this.get(SK.AUDIT) || []; },
   stagiaires()      { return this.get(SK.STAGIAIRES) || []; },
   saveStagiaires(s) { this.set(SK.STAGIAIRES, s); },
@@ -1173,6 +1176,7 @@ function getNavPages() {
     { id:'pointage-admin',  label:'Pointages',          icon:'⏱️' },
     { section:'NOTIFICATIONS' },
     { id:'notifications',   label:'Notifications',        icon:'🔔' },
+    { id:'messagerie',      label:'Messagerie',           icon:'💬' },
     { section:'GESTION' },
     { id:'utilisateurs',    label:'Utilisateurs',       icon:'👥' },
     { id:'audit',           label:'Journal d\'audit',   icon:'🛡️' },
@@ -1186,6 +1190,7 @@ function getNavPages() {
     { id:'mon-historique',  label:'Mon historique',     icon:'📋' },
     { id:'emargement',      label:'Émargement stagiaires',icon:'✍️' },
     { id:'objectifs',       label:'Mes objectifs',      icon:'🎯' },
+    { id:'messagerie',      label:'Messagerie',         icon:'💬' },
   ];
   // COLLAB
   return [
@@ -1215,6 +1220,7 @@ function navigateTo(pageId) {
       case 'alternance':        renderPageAlternance(); break;
       case 'planning-cfa':      renderPagePlanningCFA(); break;
       case 'objectifs':         renderPageObjectifs(); break;
+      case 'messagerie':        renderPageMessagerie(); break;
       case 'modules':           renderPageModules(); break;
       case 'notifications':     renderPageNotifications(); break;
       case 'pointage-admin':    renderPagePointageAdmin(); break;
@@ -1250,6 +1256,10 @@ function renderSidebar() {
     if (p.id === 'conges-admin') {
       const _pending = store.absences().filter(a => a.statut === 'en_attente').length;
       if (_pending > 0) _badge = `<span class="nav-badge amber">${_pending}</span>`;
+    }
+    if (p.id === 'messagerie' && currentUser) {
+      const _mu = msgUnreadCount(currentUser.id);
+      if (_mu > 0) _badge = `<span class="nav-badge amber">${_mu}</span>`;
     }
     el.innerHTML = `<span class="nav-icon">${p.icon}</span><span>${p.label}</span>${_badge}`;
     el.addEventListener('click', () => navigateTo(p.id));
@@ -2798,6 +2808,7 @@ getNavPages = function() {
       { id:'mon-historique',   label:'Mon historique',    icon:'📋' },
       { id:'mes-conges',       label:'Mes congés',        icon:'🌴' },
       { id:'objectifs',        label:'Mes objectifs',     icon:'🎯' },
+      { id:'messagerie',       label:'Messagerie',        icon:'💬' },
     ];
   }
   if (role === ROLES.ADMIN) {
@@ -2826,6 +2837,7 @@ navigateTo = function(pageId) {
     'planning-cfa':     renderPagePlanningCFA,
     'dashboard-dg':     renderPageDashboardDG,
     'objectifs':        renderPageObjectifs,
+    'messagerie':       renderPageMessagerie,
     'modules':          renderPageModules,
     'notifications':    renderPageNotifications,
   };
@@ -5313,6 +5325,7 @@ const SYNC_MAP = [
   { table: 'hys_audit',        sk: 'hys_audit',        label: 'Audit'        },
   { table: 'hys_modules',      sk: 'hys_modules',      label: 'Modules'      },
   { table: 'hys_objectifs',    sk: 'hys_objectifs',    label: 'Objectifs'    },
+  { table: 'hys_messages',     sk: 'hys_messages',     label: 'Messagerie'   },
 ];
 
 // Pull depuis Supabase → localStorage
@@ -5401,6 +5414,7 @@ const _syncTableMap = {
   'hys_notifs':       'hys_notifications',
   'hys_audit':        'hys_audit',
   'hys_objectifs':    'hys_objectifs',
+  'hys_messages':     'hys_messages',
 };
 
 store.set = function(key, val) {
@@ -6173,7 +6187,7 @@ function renderPageNotifications() {
       ${notifs.length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">🔔</div><p>Aucune notification</p></div></div>` :
       `<div class="card" style="padding:0">
         ${notifs.map(n => {
-          const icons = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯' };
+          const icons = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯', message:'💬' };
           return `<div class="notif-item" data-id="${n.id}" style="display:flex;align-items:flex-start;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;background:${n.lu?'transparent':'var(--hys-green-light)'};transition:background .2s">
             <span style="font-size:20px;flex-shrink:0">${icons[n.type]||'•'}</span>
             <div style="flex:1;min-width:0">
@@ -6619,6 +6633,7 @@ function openObjectifCheckModal(pend, onDone) {
   openModal('🎯 Objectifs de la semaine',
     `<p style="margin:0 0 10px;color:var(--text2)">Avant d'enregistrer votre sortie, indiquez si vous avez atteint vos objectifs de la semaine <strong>${esc(semaine.datesLabel || '')}</strong>.</p>
      <ul style="margin:0 0 14px;padding-left:20px">${objs || '<li>—</li>'}</ul>
+     ${semaine.accueil ? `<div style="margin:0 0 12px">${_accueilLine(semaine.accueil)}</div>` : ''}
      <div style="display:flex;gap:10px;margin-bottom:12px">
        <label style="flex:1;display:flex;align-items:center;gap:8px;padding:12px;border:2px solid var(--border);border-radius:var(--radius-sm);cursor:pointer" id="obj-lab-oui">
          <input type="radio" name="obj-res" value="oui"> <span>✅ Oui, atteints</span></label>
@@ -6675,6 +6690,17 @@ function _semResultBadge(s) {
   if (s.resultat === 'non') return '<span class="badge badge-red">❌ Non atteints</span>';
   return '<span class="badge badge-gray">⏳ À évaluer</span>';
 }
+// Rotation à l'accueil de la semaine : distingue « à l'accueil » de « non concerné »
+function _accueilBadge(accueil) {
+  const t = _normTxt(accueil);
+  if (!t) return '<span class="badge badge-gray">—</span>';
+  if (/non concern/.test(t)) return `<span class="badge badge-gray" title="${esc(accueil)}">Accueil : non concerné</span>`;
+  return `<span class="badge" style="background:#fef3c7;color:#b45309;border:1px solid #b4530922" title="${esc(accueil)}">🛎️ À l'accueil cette semaine</span>`;
+}
+function _accueilLine(accueil) {
+  if (!accueil) return '';
+  return `<div style="margin-top:6px">${_accueilBadge(accueil)} <span class="text-xs text-muted">${esc(accueil)}</span></div>`;
+}
 
 // --- Vue COLLABORATEUR : mes objectifs ---
 function renderPageObjectifsCollab() {
@@ -6687,6 +6713,7 @@ function renderPageObjectifsCollab() {
     <div class="card" style="border-left:4px solid var(--hys-green)">
       <div class="card-header"><div class="card-title">🎯 Semaine en cours · ${esc(cur.semaine.datesLabel || '')}</div>${_semResultBadge(cur.semaine)}</div>
       <ul style="margin:8px 0 4px;padding-left:20px">${(cur.semaine.objectifs || []).map(o => `<li style="margin:4px 0">${esc(o)}</li>`).join('') || '<li>—</li>'}</ul>
+      ${_accueilLine(cur.semaine.accueil)}
       ${cur.semaine.resultat == null ? `<p class="text-xs text-muted" style="margin-top:8px">ℹ️ Vous confirmerez l'atteinte de ces objectifs <strong>vendredi</strong>, au moment de pointer votre sortie.</p>` : `<p class="text-xs text-muted" style="margin-top:8px">${cur.semaine.commentaire ? 'Votre commentaire : ' + esc(cur.semaine.commentaire) : ''}</p>`}
     </div>` : `<div class="card"><div class="empty-state"><div class="icon">🎯</div><p>Aucun objectif défini pour la semaine en cours.</p></div></div>`;
 
@@ -6699,10 +6726,11 @@ function renderPageObjectifsCollab() {
           <div class="card-header"><div class="card-title">${esc(r.moisLabel || r.mois)}</div></div>
           ${(r.transversaux || []).length ? `<div style="margin-bottom:10px"><div class="text-xs text-muted" style="margin-bottom:4px">Objectifs transversaux du mois</div><ul style="margin:0;padding-left:20px">${r.transversaux.map(t => `<li style="margin:3px 0">${esc(t)}</li>`).join('')}</ul></div>` : ''}
           <div class="table-wrap"><table>
-            <thead><tr><th>Semaine</th><th>Objectifs</th><th>Résultat</th></tr></thead>
+            <thead><tr><th>Semaine</th><th>Objectifs</th><th>Accueil</th><th>Résultat</th></tr></thead>
             <tbody>${(r.semaines || []).map(s => `<tr>
               <td class="td-bold">${esc(s.datesLabel || ('S' + s.num))}</td>
               <td><ul style="margin:0;padding-left:16px">${(s.objectifs || []).map(o => `<li>${esc(o)}</li>`).join('') || '—'}</ul></td>
+              <td>${_accueilBadge(s.accueil)}</td>
               <td>${_semResultBadge(s)}${s.commentaire ? `<div class="text-xs text-muted" style="margin-top:3px">${esc(s.commentaire)}</div>` : ''}</td>
             </tr>`).join('')}</tbody>
           </table></div>
@@ -6735,11 +6763,12 @@ function renderPageObjectifsAdmin() {
           </div>
           ${(r.transversaux || []).length ? `<div style="margin-bottom:10px"><div class="text-xs text-muted" style="margin-bottom:4px">Objectifs transversaux</div><ul style="margin:0;padding-left:20px">${r.transversaux.map(t => `<li style="margin:3px 0">${esc(t)}</li>`).join('')}</ul></div>` : ''}
           <div class="table-wrap"><table>
-            <thead><tr><th>Semaine</th><th>Dates</th><th>Objectifs</th><th>Résultat</th></tr></thead>
+            <thead><tr><th>Semaine</th><th>Dates</th><th>Objectifs</th><th>Accueil</th><th>Résultat</th></tr></thead>
             <tbody>${(r.semaines || []).map(s => `<tr>
               <td class="td-bold">S${s.num}</td>
               <td>${esc(s.datesLabel || '')}</td>
               <td><ul style="margin:0;padding-left:16px">${(s.objectifs || []).map(o => `<li>${esc(o)}</li>`).join('') || '—'}</ul></td>
+              <td>${_accueilBadge(s.accueil)}</td>
               <td>${_semResultBadge(s)}${s.commentaire ? `<div class="text-xs text-muted" style="margin-top:3px">${esc(s.commentaire)}</div>` : ''}</td>
             </tr>`).join('')}</tbody>
           </table></div>
@@ -6787,6 +6816,8 @@ function openObjectifImportPreview(parsed) {
       <div style="font-weight:700;font-size:13px;margin-bottom:4px">Semaine ${s.num} · ${esc(s.datesLabel || '')} ${(!s.dateDebut ? '<span class="badge badge-amber">dates non reconnues</span>' : '')}</div>
       <label class="text-xs text-muted">Objectifs (une ligne par objectif)</label>
       <textarea class="form-control obj-prev-sem" data-i="${i}" rows="${Math.max(2, (s.objectifs || []).length)}">${(s.objectifs || []).map(esc).join('\n')}</textarea>
+      <label class="text-xs text-muted" style="margin-top:6px;display:block">Rotation accueil (semaine)</label>
+      <input type="text" class="form-control obj-prev-acc" data-i="${i}" value="${esc(s.accueil || '')}">
     </div>`).join('');
 
   openModal('📄 Aperçu de l\'import — ' + (parsed.moisLabel || ''),
@@ -6821,9 +6852,10 @@ function saveObjectifImport(parsed) {
   const transversaux = (document.getElementById('obj-prev-trans')?.value || '').split('\n').map(x => x.trim()).filter(Boolean);
   const semaines = parsed.semaines.map((s, i) => {
     const ta = document.querySelector(`.obj-prev-sem[data-i="${i}"]`);
+    const accEl = document.querySelector(`.obj-prev-acc[data-i="${i}"]`);
     const objectifs = (ta ? ta.value : '').split('\n').map(x => x.trim()).filter(Boolean);
     return { num: s.num, datesLabel: s.datesLabel, dateDebut: s.dateDebut, dateFin: s.dateFin,
-             statut: s.statut, objectifs, accueil: s.accueil, resultat: s.resultat ?? null,
+             statut: s.statut, objectifs, accueil: accEl ? accEl.value.trim() : s.accueil, resultat: s.resultat ?? null,
              commentaire: s.commentaire || '', evalueLe: s.evalueLe || null };
   });
   const u = store.users().find(x => x.id === userId);
@@ -6855,6 +6887,297 @@ function saveObjectifImport(parsed) {
   closeModal();
   toast('✅ Objectifs enregistrés.', 'success');
   renderPageObjectifsAdmin();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HYS PointPro — MODULE MESSAGERIE INTERNE
+//  • Annonces Direction → équipe (avec accusé de lecture / suivi des lus)
+//  • Messages directs 1-à-1 entre utilisateurs
+//  • Messages « importants » : accusé de lecture obligatoire
+//  • Diffusion à toute l'équipe réservée à la Direction / Admin
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Utilisateurs actifs (destinataires possibles), hors soi-même
+function _msgUsers(excludeSelf = true) {
+  return store.users().filter(u => u.statut === 'actif' && (!excludeSelf || u.id !== currentUser.id))
+    .sort((a, b) => (a.nom || '').localeCompare(b.nom || ''));
+}
+function _userNom(id) {
+  const u = store.users().find(x => x.id === id);
+  return u ? (u.prenom + ' ' + u.nom) : '—';
+}
+// Messages adressés à un utilisateur (destinataire) et non encore lus par lui
+function msgUnreadCount(userId) {
+  return store.messages().filter(m =>
+    (m.destinataires || []).includes(userId) && !(m.lus || {})[userId]
+  ).length;
+}
+function updateMessagerieBadge() {
+  const n = msgUnreadCount(currentUser?.id);
+  document.querySelectorAll('[data-page="messagerie"] .nav-badge').forEach(b => b.remove());
+  document.querySelectorAll('[data-page="messagerie"]').forEach(el => {
+    if (n > 0 && !el.querySelector('.nav-badge')) {
+      const s = document.createElement('span'); s.className = 'nav-badge amber'; s.textContent = n; el.appendChild(s);
+    }
+  });
+}
+// Marque comme lus (sans re-render) une liste d'ID pour l'utilisateur courant
+function _markLu(ids) {
+  if (!ids.length) return;
+  const msgs = store.messages(); let changed = false;
+  ids.forEach(id => {
+    const m = msgs.find(x => x.id === id);
+    if (m && !(m.lus = m.lus || {})[currentUser.id]) { m.lus[currentUser.id] = now(); changed = true; }
+  });
+  if (changed) { store.saveMessages(msgs); updateMessagerieBadge(); renderSidebar(); }
+}
+// Rafraîchit les messages depuis Supabase sans reboucler sur un push
+async function refreshMessages() {
+  try {
+    if (!supa.isConfigured() || !navigator.onLine) return;
+    const rows = await supa.select('hys_messages');
+    if (rows) { _storeSetOrig(SK.MESSAGES, rows); store.invalidate(SK.MESSAGES); }
+  } catch {}
+}
+
+// ─── PAGE MESSAGERIE ──────────────────────────────────────────────────────────
+let _msgTab = 'annonces';
+function renderPageMessagerie(tab) {
+  _msgTab = tab || _msgTab || 'annonces';
+  const main = document.getElementById('main-content');
+  const unread = msgUnreadCount(currentUser.id);
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>💬 Messagerie</h2><p>Canal de communication interne · ${unread} non lu(s)</p></div>
+      <div style="display:flex;gap:8px">
+        ${isAdmin() ? `<button class="btn btn-primary" id="msg-new-annonce">📢 Nouvelle annonce</button>` : ''}
+        <button class="btn ${isAdmin() ? 'btn-ghost' : 'btn-primary'}" id="msg-new-direct">✉️ Nouveau message</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="tabs" style="display:flex;gap:6px;margin-bottom:14px">
+        <button class="btn btn-sm ${_msgTab === 'annonces' ? 'btn-primary' : 'btn-ghost'}" id="msg-tab-annonces">📢 Annonces</button>
+        <button class="btn btn-sm ${_msgTab === 'directs' ? 'btn-primary' : 'btn-ghost'}" id="msg-tab-directs">✉️ Messages directs</button>
+      </div>
+      <div id="msg-tab-content">${_msgTab === 'annonces' ? renderMsgAnnonces() : renderMsgDirects()}</div>
+    </div>`;
+
+  document.getElementById('msg-tab-annonces')?.addEventListener('click', () => renderPageMessagerie('annonces'));
+  document.getElementById('msg-tab-directs')?.addEventListener('click', () => renderPageMessagerie('directs'));
+  document.getElementById('msg-new-annonce')?.addEventListener('click', openComposeAnnonce);
+  document.getElementById('msg-new-direct')?.addEventListener('click', () => openComposeDirect());
+  _attachMsgListeners();
+
+  // Rafraîchit depuis le serveur puis re-render une fois (données fraîches)
+  refreshMessages().then(() => { if (currentPage === 'messagerie') { const c = document.getElementById('msg-tab-content'); if (c) c.innerHTML = _msgTab === 'annonces' ? renderMsgAnnonces() : renderMsgDirects(); _attachMsgListeners(); } });
+}
+
+function _impBadge(m) {
+  return m.important ? '<span class="badge badge-red">❗ Important</span>' : '';
+}
+
+// --- Onglet ANNONCES ---
+function renderMsgAnnonces() {
+  const all = store.messages().filter(m => m.type === 'annonce')
+    .sort((a, b) => (b.iso || '').localeCompare(a.iso || ''));
+  const mine = all.filter(m => (m.destinataires || []).includes(currentUser.id));
+  const sent = all.filter(m => m.auteurId === currentUser.id);
+
+  // Auto-lecture des annonces non importantes qui me sont adressées
+  const autoLu = mine.filter(m => !m.important && !(m.lus || {})[currentUser.id]).map(m => m.id);
+  if (autoLu.length) setTimeout(() => _markLu(autoLu), 100);
+
+  const cardAnnonce = (m, forAdminView) => {
+    const lu = (m.lus || {})[currentUser.id];
+    const isRecipient = (m.destinataires || []).includes(currentUser.id);
+    const nbLus = Object.keys(m.lus || {}).filter(uid => (m.destinataires || []).includes(uid)).length;
+    const total = (m.destinataires || []).length;
+    return `<div class="card" style="${m.important && isRecipient && !lu ? 'border-left:4px solid #ef4444' : ''}">
+      <div class="card-header">
+        <div><div class="card-title">${esc(m.objet || '(sans objet)')} ${_impBadge(m)}</div>
+        <div class="text-xs text-muted" style="margin-top:2px">De ${esc(m.auteurNom || _userNom(m.auteurId))} · ${new Date(m.ts).toLocaleString('fr-FR')}</div></div>
+        ${forAdminView ? `<span class="badge ${nbLus === total ? 'badge-green' : 'badge-amber'}">Lu ${nbLus}/${total}</span>` : ''}
+      </div>
+      <div style="white-space:pre-wrap;font-size:14px;margin:6px 0 8px">${esc(m.corps || '')}</div>
+      ${forAdminView ? `<details><summary class="text-xs text-muted" style="cursor:pointer">Détail des lectures</summary>
+        <div class="text-xs" style="margin-top:6px">${(m.destinataires || []).map(uid => `${(m.lus || {})[uid] ? '✅' : '⏳'} ${esc(_userNom(uid))}`).join('<br>')}</div></details>` : ''}
+      ${(isRecipient && m.important && !lu) ? `<button class="btn btn-primary btn-sm msg-ack" data-id="${m.id}">✅ J'ai lu et pris connaissance</button>` : (isRecipient && lu ? `<span class="text-xs text-muted">✅ Lu le ${new Date(lu).toLocaleString('fr-FR')}</span>` : '')}
+    </div>`;
+  };
+
+  let html = '';
+  if (isAdmin() && sent.length) {
+    html += `<div class="card-title" style="margin:4px 0 8px">📤 Mes annonces diffusées</div>` + sent.map(m => cardAnnonce(m, true)).join('');
+  }
+  const received = mine.filter(m => m.auteurId !== currentUser.id);
+  html += `<div class="card-title" style="margin:14px 0 8px">📥 Annonces reçues</div>`;
+  html += received.length ? received.map(m => cardAnnonce(m, false)).join('')
+    : `<div class="card"><div class="empty-state"><div class="icon">📢</div><p>Aucune annonce.</p></div></div>`;
+  return html;
+}
+
+// --- Onglet MESSAGES DIRECTS ---
+function renderMsgDirects() {
+  const msgs = store.messages().filter(m => m.type === 'direct' &&
+    (m.auteurId === currentUser.id || (m.destinataires || []).includes(currentUser.id)));
+  // Regrouper par interlocuteur
+  const convs = {};
+  msgs.forEach(m => {
+    const other = m.auteurId === currentUser.id ? (m.destinataires || [])[0] : m.auteurId;
+    if (!other) return;
+    if (!convs[other]) convs[other] = [];
+    convs[other].push(m);
+  });
+  const items = Object.entries(convs).map(([other, list]) => {
+    list.sort((a, b) => a.ts - b.ts);
+    const last = list[list.length - 1];
+    const unread = list.filter(m => m.auteurId === other && !(m.lus || {})[currentUser.id]).length;
+    return { other, last, unread };
+  }).sort((a, b) => b.last.ts - a.last.ts);
+
+  if (!items.length) return `<div class="card"><div class="empty-state"><div class="icon">✉️</div><p>Aucun message direct. Cliquez sur « Nouveau message » pour démarrer.</p></div></div>`;
+  return `<div class="card" style="padding:0">${items.map(it => `
+    <div class="notif-item msg-conv" data-other="${it.other}" style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer">
+      <span style="font-size:20px">👤</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:${it.unread ? '700' : '600'};font-size:14px">${esc(_userNom(it.other))} ${it.unread ? `<span class="badge badge-red">${it.unread}</span>` : ''}</div>
+        <div class="text-xs text-muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${it.last.important ? '❗ ' : ''}${esc((it.last.auteurId === currentUser.id ? 'Vous : ' : '') + (it.last.corps || ''))}</div>
+      </div>
+      <span class="text-xs text-muted">${new Date(it.last.ts).toLocaleDateString('fr-FR')}</span>
+    </div>`).join('')}</div>`;
+}
+
+function _attachMsgListeners() {
+  document.querySelectorAll('.msg-ack').forEach(b => b.addEventListener('click', () => ackMessage(b.getAttribute('data-id'))));
+  document.querySelectorAll('.msg-conv').forEach(b => b.addEventListener('click', () => openConversation(b.getAttribute('data-other'))));
+}
+
+// --- Accusé de lecture ---
+function ackMessage(id) {
+  const msgs = store.messages();
+  const m = msgs.find(x => x.id === id);
+  if (m) { m.lus = m.lus || {}; m.lus[currentUser.id] = now(); store.saveMessages(msgs);
+    store.addAudit({ action: 'MESSAGE_LU', userId: currentUser.id, detail: `Accusé de lecture — « ${m.objet || (m.corps || '').slice(0, 30)} »` });
+    updateMessagerieBadge(); renderSidebar(); }
+  renderPageMessagerie(_msgTab);
+}
+
+// --- Conversation directe (fil + réponse) ---
+function openConversation(otherId) {
+  const list = store.messages().filter(m => m.type === 'direct' &&
+    ((m.auteurId === currentUser.id && (m.destinataires || [])[0] === otherId) ||
+     (m.auteurId === otherId && (m.destinataires || []).includes(currentUser.id))))
+    .sort((a, b) => a.ts - b.ts);
+  // Marquer lus les messages reçus non importants
+  const autoLu = list.filter(m => m.auteurId === otherId && !m.important && !(m.lus || {})[currentUser.id]).map(m => m.id);
+  if (autoLu.length) _markLu(autoLu);
+
+  const bubbles = list.map(m => {
+    const mine = m.auteurId === currentUser.id;
+    const needAck = !mine && m.important && !(m.lus || {})[currentUser.id];
+    return `<div style="display:flex;justify-content:${mine ? 'flex-end' : 'flex-start'};margin:6px 0">
+      <div style="max-width:75%;padding:8px 12px;border-radius:12px;background:${mine ? 'var(--hys-green)' : 'var(--bg3)'};color:${mine ? '#fff' : 'var(--text)'}">
+        ${m.important ? '<div style="font-size:11px;font-weight:700;margin-bottom:2px">❗ Important</div>' : ''}
+        <div style="white-space:pre-wrap;font-size:14px">${esc(m.corps || '')}</div>
+        <div style="font-size:10px;opacity:.7;margin-top:3px">${new Date(m.ts).toLocaleString('fr-FR')}${mine && (m.lus || {})[otherId] ? ' · ✅ lu' : ''}</div>
+        ${needAck ? `<button class="btn btn-primary btn-sm msg-ack-inline" data-id="${m.id}" style="margin-top:6px">✅ J'ai lu</button>` : ''}
+      </div></div>`;
+  }).join('');
+
+  openModal('✉️ ' + _userNom(otherId),
+    `<div style="max-height:45vh;overflow-y:auto;padding:4px;margin-bottom:10px" id="msg-thread">${bubbles || '<p class="text-muted">Début de la conversation.</p>'}</div>
+     <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px"><input type="checkbox" id="msg-reply-imp"> Marquer comme important (accusé de lecture requis)</label>
+     <textarea id="msg-reply-body" class="form-control" rows="3" placeholder="Votre message…"></textarea>`,
+    [
+      { cls: 'btn-ghost', label: 'Fermer', action: () => { closeModal(); renderPageMessagerie('directs'); } },
+      { cls: 'btn-primary', label: 'Envoyer', action: () => {
+        const body = (document.getElementById('msg-reply-body')?.value || '').trim();
+        if (!body) { toast('Écrivez un message.', 'warning'); return; }
+        sendMessage({ type: 'direct', destinataires: [otherId], corps: body, important: !!document.getElementById('msg-reply-imp')?.checked });
+        closeModal(); openConversation(otherId);
+      } }
+    ], true);
+  setTimeout(() => {
+    document.querySelectorAll('.msg-ack-inline').forEach(b => b.addEventListener('click', () => { ackMessage(b.getAttribute('data-id')); closeModal(); openConversation(otherId); }));
+    const th = document.getElementById('msg-thread'); if (th) th.scrollTop = th.scrollHeight;
+  }, 60);
+}
+
+// --- Composer une annonce (Direction/Admin) ---
+function openComposeAnnonce() {
+  if (!isAdmin()) { toast('Réservé à la Direction.', 'warning'); return; }
+  const users = _msgUsers();
+  openModal('📢 Nouvelle annonce',
+    `<label class="text-xs text-muted">Objet</label>
+     <input type="text" id="msg-obj" class="form-control" placeholder="Objet de l'annonce">
+     <label class="text-xs text-muted" style="margin-top:10px;display:block">Message</label>
+     <textarea id="msg-body" class="form-control" rows="5" placeholder="Votre annonce…"></textarea>
+     <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin:10px 0"><input type="checkbox" id="msg-imp"> ❗ Message important (accusé de lecture obligatoire)</label>
+     <div class="text-xs text-muted" style="margin-bottom:4px">Destinataires <button class="btn btn-ghost btn-sm" id="msg-toggle-all" type="button" style="padding:2px 8px">Tout (dé)sélectionner</button></div>
+     <div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px">
+       ${users.map(u => `<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px"><input type="checkbox" class="msg-dest" value="${u.id}" checked> ${esc(u.prenom)} ${esc(u.nom)} <span class="text-xs text-muted">${esc(ROLE_LABELS[u.role] || '')}</span></label>`).join('')}
+     </div>`,
+    [
+      { cls: 'btn-ghost', label: 'Annuler', action: () => closeModal() },
+      { cls: 'btn-primary', label: 'Diffuser', action: () => {
+        const objet = (document.getElementById('msg-obj')?.value || '').trim();
+        const corps = (document.getElementById('msg-body')?.value || '').trim();
+        const dest = Array.from(document.querySelectorAll('.msg-dest:checked')).map(c => c.value);
+        if (!corps) { toast('Le message est vide.', 'warning'); return; }
+        if (!dest.length) { toast('Sélectionnez au moins un destinataire.', 'warning'); return; }
+        sendMessage({ type: 'annonce', destinataires: dest, objet, corps, important: !!document.getElementById('msg-imp')?.checked });
+        closeModal(); renderPageMessagerie('annonces');
+      } }
+    ], true);
+  setTimeout(() => document.getElementById('msg-toggle-all')?.addEventListener('click', () => {
+    const boxes = document.querySelectorAll('.msg-dest'); const anyOff = Array.from(boxes).some(b => !b.checked);
+    boxes.forEach(b => b.checked = anyOff);
+  }), 50);
+}
+
+// --- Composer un message direct (tout le monde) ---
+function openComposeDirect(prefillId) {
+  const users = _msgUsers();
+  openModal('✉️ Nouveau message',
+    `<label class="text-xs text-muted">Destinataire</label>
+     <select id="msg-to" class="form-control">
+       <option value="">— Choisir —</option>
+       ${users.map(u => `<option value="${u.id}" ${u.id === prefillId ? 'selected' : ''}>${esc(u.prenom)} ${esc(u.nom)}</option>`).join('')}
+     </select>
+     <label class="text-xs text-muted" style="margin-top:10px;display:block">Message</label>
+     <textarea id="msg-d-body" class="form-control" rows="4" placeholder="Votre message…"></textarea>
+     <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:10px"><input type="checkbox" id="msg-d-imp"> ❗ Important (accusé de lecture requis)</label>`,
+    [
+      { cls: 'btn-ghost', label: 'Annuler', action: () => closeModal() },
+      { cls: 'btn-primary', label: 'Envoyer', action: () => {
+        const to = document.getElementById('msg-to')?.value;
+        const body = (document.getElementById('msg-d-body')?.value || '').trim();
+        if (!to) { toast('Choisissez un destinataire.', 'warning'); return; }
+        if (!body) { toast('Le message est vide.', 'warning'); return; }
+        sendMessage({ type: 'direct', destinataires: [to], corps: body, important: !!document.getElementById('msg-d-imp')?.checked });
+        closeModal(); renderPageMessagerie('directs');
+      } }
+    ], true);
+}
+
+// --- Envoi + notifications aux destinataires ---
+function sendMessage(rec) {
+  const d = new Date();
+  const msg = {
+    id: uid(), type: rec.type, important: !!rec.important,
+    auteurId: currentUser.id, auteurNom: currentUser.prenom + ' ' + currentUser.nom,
+    destinataires: rec.destinataires || [], objet: rec.objet || '', corps: rec.corps || '',
+    lus: { [currentUser.id]: now() }, // l'auteur a « lu » son propre message
+    ts: d.getTime(), iso: d.toISOString(), createdAt: now()
+  };
+  const msgs = store.messages(); msgs.unshift(msg); store.saveMessages(msgs);
+  const label = rec.type === 'annonce' ? `📢 Annonce${rec.important ? ' importante' : ''} : ${esc(rec.objet || '')}` : `✉️ Message${rec.important ? ' important' : ''} de ${esc(currentUser.prenom)} ${esc(currentUser.nom)}`;
+  (rec.destinataires || []).forEach(uidDest => {
+    store.addNotif({ type: 'message', userId: uidDest, message: label });
+  });
+  store.addAudit({ action: 'MESSAGE_ENVOI', userId: currentUser.id, detail: `${rec.type} → ${(rec.destinataires || []).length} destinataire(s)${rec.important ? ' (important)' : ''}` });
+  updateMessagerieBadge(); renderSidebar();
+  toast('✅ Message envoyé.', 'success');
 }
 
 async function init() {
