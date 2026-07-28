@@ -749,6 +749,7 @@ const SK = {
   EMARGEMENTS:  'hys_emargements',
   SEMAINES_CFA: 'hys_semaines_cfa',
   NOTIFICATIONS:'hys_notifs',
+  OBJECTIFS:    'hys_objectifs',
   LOGIN_ATTEMPTS:'hys_login_attempts',
 };
 
@@ -773,6 +774,8 @@ const store = {
   savePointages(p)  { this.set(SK.POINTAGES, p); },
   notifs()          { return this.get(SK.NOTIFICATIONS) || []; },
   saveNotifs(n)     { this.set(SK.NOTIFICATIONS, n); updateNotifBadge(); },
+  objectifs()       { return this.get(SK.OBJECTIFS) || []; },
+  saveObjectifs(o)  { this.set(SK.OBJECTIFS, o); },
   audit()           { return this.get(SK.AUDIT) || []; },
   stagiaires()      { return this.get(SK.STAGIAIRES) || []; },
   saveStagiaires(s) { this.set(SK.STAGIAIRES, s); },
@@ -1165,7 +1168,7 @@ function getNavPages() {
     { id:'stagiaires',      label:'Stagiaires',         icon:'🎓' },
     { id:'alternance',      label:'Calendrier alternance',icon:'📆' },
     { id:'planning-cfa',    label:'Planning CFA',         icon:'📅' },
-    { id:'qualiopi',        label:'Qualiopi',             icon:'🏅' },
+    { id:'objectifs',       label:'Objectifs',            icon:'🎯' },
     { id:'modules',         label:'Modules formation',    icon:'📚' },
     { id:'pointage-admin',  label:'Pointages',          icon:'⏱️' },
     { section:'NOTIFICATIONS' },
@@ -1182,6 +1185,7 @@ function getNavPages() {
     { id:'pointage',        label:'Mon pointage',       icon:'⏱️' },
     { id:'mon-historique',  label:'Mon historique',     icon:'📋' },
     { id:'emargement',      label:'Émargement stagiaires',icon:'✍️' },
+    { id:'objectifs',       label:'Mes objectifs',      icon:'🎯' },
   ];
   // COLLAB
   return [
@@ -1210,7 +1214,7 @@ function navigateTo(pageId) {
       case 'stagiaires':        renderPageStagiaires(); break;
       case 'alternance':        renderPageAlternance(); break;
       case 'planning-cfa':      renderPagePlanningCFA(); break;
-      case 'qualiopi':          renderPageQualiopi(); break;
+      case 'objectifs':         renderPageObjectifs(); break;
       case 'modules':           renderPageModules(); break;
       case 'notifications':     renderPageNotifications(); break;
       case 'pointage-admin':    renderPagePointageAdmin(); break;
@@ -1413,7 +1417,13 @@ function renderPagePointage() {
   document.getElementById('btn-emarg-apm')?.addEventListener('click', () => { navigateTo('emargement'); });
 }
 
-async function doPointage(type) {
+async function doPointage(type, _skipObjectifCheck) {
+  // Contrôle des objectifs : le vendredi, avant d'enregistrer une SORTIE, le
+  // collaborateur doit déclarer s'il a atteint ses objectifs de la semaine.
+  if (type === 'sortie' && !_skipObjectifCheck) {
+    const _pend = objectifCheckPending(currentUser.id, new Date());
+    if (_pend) { openObjectifCheckModal(_pend, () => doPointage('sortie', true)); return; }
+  }
   const d = new Date();
   const p = { id:uid(), userId:currentUser.id, type, date:dateStr(d), heure:timeStr(d), timestamp:d.getTime() };
   const pts = store.pointages(); pts.push(p); store.savePointages(pts);
@@ -2787,6 +2797,7 @@ getNavPages = function() {
       { id:'pointage-tache',   label:'Pointage mission',  icon:'🎯' },
       { id:'mon-historique',   label:'Mon historique',    icon:'📋' },
       { id:'mes-conges',       label:'Mes congés',        icon:'🌴' },
+      { id:'objectifs',        label:'Mes objectifs',     icon:'🎯' },
     ];
   }
   if (role === ROLES.ADMIN) {
@@ -2814,7 +2825,7 @@ navigateTo = function(pageId) {
     'rapport-mensuel':  renderPageRapportMensuel,
     'planning-cfa':     renderPagePlanningCFA,
     'dashboard-dg':     renderPageDashboardDG,
-    'qualiopi':         renderPageQualiopi,
+    'objectifs':        renderPageObjectifs,
     'modules':          renderPageModules,
     'notifications':    renderPageNotifications,
   };
@@ -2826,7 +2837,6 @@ navigateTo = function(pageId) {
     if (main) main.scrollTo(0, 0);
     try {
       collabPages[pageId]();
-      if (pageId === 'qualiopi') setTimeout(attachQualiopiListeners, 100);
     }
     catch(err) {
       console.error('[HYS] Erreur page "'+pageId+'":', err);
@@ -5302,6 +5312,7 @@ const SYNC_MAP = [
   { table: 'hys_notifications',sk: 'hys_notifs',       label: 'Notifications'},
   { table: 'hys_audit',        sk: 'hys_audit',        label: 'Audit'        },
   { table: 'hys_modules',      sk: 'hys_modules',      label: 'Modules'      },
+  { table: 'hys_objectifs',    sk: 'hys_objectifs',    label: 'Objectifs'    },
 ];
 
 // Pull depuis Supabase → localStorage
@@ -5389,6 +5400,7 @@ const _syncTableMap = {
   'hys_soldes_cp':    'hys_soldes_cp',
   'hys_notifs':       'hys_notifications',
   'hys_audit':        'hys_audit',
+  'hys_objectifs':    'hys_objectifs',
 };
 
 store.set = function(key, val) {
@@ -5804,624 +5816,6 @@ renderSidebar = function() {
 //  Exports PDF + Excel
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ─── RÉFÉRENTIEL QUALIOPI ─────────────────────────────────────────────────────
-const QUALIOPI_CRITERES = [
-  {
-    id: 'C1', label: 'Information du public',
-    color: '#2ebd6b', icon: '📢',
-    indicateurs: [
-      { id:'1.1', label:'Conditions d\'accès et délais', auto: false },
-      { id:'1.2', label:'Tarifs et modalités de financement', auto: false },
-      { id:'1.3', label:'Contacts et modalités d\'accueil', auto: false },
-    ]
-  },
-  {
-    id: 'C2', label: 'Identification des objectifs',
-    color: '#3b82f6', icon: '🎯',
-    indicateurs: [
-      { id:'2.1', label:'Objectifs de la prestation', auto: false },
-      { id:'2.2', label:'Adaptation au public bénéficiaire', auto: false },
-      { id:'2.3', label:'Adéquation des moyens pédagogiques', auto: false },
-    ]
-  },
-  {
-    id: 'C3', label: 'Adaptation de la prestation',
-    color: '#8b5cf6', icon: '🔄',
-    indicateurs: [
-      { id:'3.1', label:'Information et positionnement des bénéficiaires', auto: false },
-      { id:'3.2', label:'Adaptation des prestations', auto: false },
-      { id:'3.3', label:'Coordination des intervenants', auto: false },
-    ]
-  },
-  {
-    id: 'C4', label: 'Engagement des bénéficiaires',
-    color: '#f59e0b', icon: '✅',
-    indicateurs: [
-      { id:'4.1', label:'Présence et engagement des bénéficiaires', auto: true, fn: 'calcTauxPresence' },
-      { id:'4.2', label:'Abandon en cours de prestation', auto: true, fn: 'calcTauxAbandon' },
-      { id:'4.3', label:'Réclamations des bénéficiaires', auto: false },
-    ]
-  },
-  {
-    id: 'C5', label: 'Moyens humains et techniques',
-    color: '#0d9488', icon: '👥',
-    indicateurs: [
-      { id:'5.1', label:'Qualification des formateurs', auto: false },
-      { id:'5.2', label:'Actualisation des compétences formateurs', auto: false },
-      { id:'5.3', label:'Environnement de travail adapté', auto: false },
-    ]
-  },
-  {
-    id: 'C6', label: 'Contrôle et amélioration',
-    color: '#ef4444', icon: '📊',
-    indicateurs: [
-      { id:'6.1', label:'Taux de présence aux émargements', auto: true, fn: 'calcTauxEmargement' },
-      { id:'6.2', label:'Taux de satisfaction', auto: false },
-      { id:'6.3', label:'Taux de certification/résultat', auto: false },
-      { id:'6.4', label:'Taux d\'insertion professionnelle', auto: false },
-    ]
-  },
-];
-
-// ─── STORE QUALIOPI ───────────────────────────────────────────────────────────
-const SK_QUA = 'hys_qualiopi_data';
-Object.assign(store, {
-  qualiopiData()     { return this.get(SK_QUA) || {}; },
-  saveQualiopiData(d){ this.set(SK_QUA, d); },
-  getIndicateur(id)  { return (this.qualiopiData())[id] || { score: null, note: '', updatedAt: null }; },
-  saveIndicateur(id, val) {
-    const d = this.qualiopiData();
-    d[id] = { ...val, updatedAt: new Date().toISOString() };
-    this.saveQualiopiData(d);
-  },
-});
-
-// ─── CALCULS AUTO ─────────────────────────────────────────────────────────────
-function calcTauxPresence() {
-  // Taux de présence : nb séances pointées / nb séances attendues
-  const emargs = store.emargements();
-  if (emargs.length === 0) return null;
-  let totalPres = 0, totalAtt = 0;
-  emargs.forEach(e => {
-    const stags = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === e.promotion);
-    totalAtt += stags.length;
-    totalPres += Object.values(e.presences || {}).filter(Boolean).length;
-  });
-  return totalAtt > 0 ? Math.round((totalPres / totalAtt) * 100) : null;
-}
-
-function calcTauxEmargement() {
-  // % émargements signés / émargements totaux
-  const emargs = store.emargements();
-  if (emargs.length === 0) return null;
-  const signed = emargs.filter(e => e.signatureFormateur).length;
-  return Math.round((signed / emargs.length) * 100);
-}
-
-function calcTauxAbandon() {
-  // Indicateur simplifié — à alimenter manuellement pour l'instant
-  return null;
-}
-
-function getAutoScore(fn) {
-  switch(fn) {
-    case 'calcTauxPresence':   return calcTauxPresence();
-    case 'calcTauxEmargement': return calcTauxEmargement();
-    case 'calcTauxAbandon':    return calcTauxAbandon();
-    default: return null;
-  }
-}
-
-function scoreColor(score) {
-  if (score === null || score === undefined) return 'var(--text3)';
-  if (score >= 80) return 'var(--hys-green)';
-  if (score >= 60) return 'var(--amber)';
-  return 'var(--red)';
-}
-
-function scoreBadge(score) {
-  if (score === null || score === undefined) return '<span class="badge badge-gray">Non renseigné</span>';
-  if (score >= 80) return `<span class="badge badge-green">✅ ${score}%</span>`;
-  if (score >= 60) return `<span class="badge badge-amber">⚠️ ${score}%</span>`;
-  return `<span class="badge badge-red">❌ ${score}%</span>`;
-}
-
-function scoreRing(score) {
-  if (score === null) return '<span style="font-size:22px;color:var(--text3)">—</span>';
-  const col = scoreColor(score);
-  const r = 18, c = 22, circ = 2 * Math.PI * r;
-  const dash = (score / 100) * circ;
-  return `<svg width="44" height="44" viewBox="0 0 44 44">
-    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="4"/>
-    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${col}" stroke-width="4"
-      stroke-dasharray="${dash} ${circ}" stroke-dashoffset="${circ/4}"
-      transform="rotate(-90 ${c} ${c})" style="transition:stroke-dasharray .8s ease"/>
-    <text x="${c}" y="${c+1}" text-anchor="middle" dominant-baseline="middle"
-      font-size="10" font-weight="800" fill="${col}">${score}%</text>
-  </svg>`;
-}
-
-// ─── SCORE GLOBAL CRITÈRE ─────────────────────────────────────────────────────
-function scoreCritere(critere) {
-  const scores = critere.indicateurs.map(ind => {
-    if (ind.auto) return getAutoScore(ind.fn);
-    return store.getIndicateur(ind.id).score;
-  }).filter(s => s !== null && s !== undefined);
-  if (scores.length === 0) return null;
-  return Math.round(scores.reduce((a,b) => a+b, 0) / scores.length);
-}
-
-function scoreGlobal() {
-  const scores = QUALIOPI_CRITERES.map(c => scoreCritere(c)).filter(s => s !== null);
-  if (scores.length === 0) return null;
-  return Math.round(scores.reduce((a,b) => a+b, 0) / scores.length);
-}
-
-// ─── PAGE: TABLEAU DE BORD QUALIOPI ──────────────────────────────────────────
-function renderPageQualiopi(activeTab = 'dashboard') {
-  const global = scoreGlobal();
-  const tauxPres   = calcTauxPresence();
-  const tauxEmarg  = calcTauxEmargement();
-  const settings   = store.settings();
-  const today      = new Date().toLocaleDateString('fr-FR');
-  const promotions = settings.promotions || [];
-  const nbStagiaires = store.stagiaires().filter(s => s.statut === 'actif').length;
-  const nbFormateurs = store.users().filter(u => u.role === ROLES.FORMATEUR && u.statut === 'actif').length;
-  const nbEmargements= store.emargements().length;
-  const nbSemaines   = store.semainesCfa().length;
-
-  const main = document.getElementById('main-content');
-  main.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <h2>🏅 Tableau de bord Qualiopi</h2>
-        <p>${settings.organisation} · Organisme certifié Qualiopi · ${today}</p>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-outline-green btn-sm" id="qua-pdf">📄 Export PDF</button>
-        <button class="btn btn-ghost btn-sm" id="qua-excel">📊 Export Excel</button>
-      </div>
-    </div>
-    <div class="page-body">
-
-      <!-- Tabs -->
-      <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border)">
-        ${[
-          { id:'dashboard', label:'📊 Vue globale' },
-          { id:'indicateurs', label:'📋 Indicateurs' },
-          { id:'emargements', label:'✍️ Présences' },
-          { id:'saisie', label:'✏️ Saisie manuelle' },
-        ].map(t => `
-          <button onclick="renderPageQualiopi('${t.id}')"
-            style="padding:10px 18px;background:none;border:none;border-bottom:${activeTab===t.id?'3px solid var(--hys-green)':'3px solid transparent'};
-            color:${activeTab===t.id?'var(--hys-green)':'var(--text3)'};font-weight:${activeTab===t.id?'700':'500'};
-            font-size:13px;cursor:pointer;font-family:var(--font);transition:all .15s;white-space:nowrap">
-            ${t.label}
-          </button>`).join('')}
-      </div>
-
-      ${activeTab === 'dashboard'  ? renderQualiopiDashboard(global, tauxPres, tauxEmarg, nbStagiaires, nbFormateurs, nbEmargements, nbSemaines, promotions) : ''}
-      ${activeTab === 'indicateurs'? renderQualiopiIndicateurs() : ''}
-      ${activeTab === 'emargements'? renderQualiopiPresences() : ''}
-      ${activeTab === 'saisie'     ? renderQualiopiSaisie() : ''}
-    </div>`;
-
-  document.getElementById('qua-pdf')?.addEventListener('click', exportQualiopiPDF);
-  document.getElementById('qua-excel')?.addEventListener('click', exportQualiopiExcel);
-}
-
-// ─── TAB: VUE GLOBALE ─────────────────────────────────────────────────────────
-function renderQualiopiDashboard(global, tauxPres, tauxEmarg, nbStags, nbFmtrs, nbEmargs, nbSems, promotions) {
-  return `
-    <!-- Score global -->
-    <div class="card hys-card" style="text-align:center;padding:28px">
-      <div style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px">Score global de conformité Qualiopi</div>
-      ${global !== null ? `
-      <div style="font-size:72px;font-weight:900;color:${scoreColor(global)};line-height:1;letter-spacing:-2px">${global}<span style="font-size:36px">%</span></div>
-      <div style="margin:12px auto 0;max-width:320px;height:8px;background:var(--border);border-radius:4px;overflow:hidden">
-        <div style="height:100%;width:${global}%;background:${scoreColor(global)};border-radius:4px;transition:width 1s ease"></div>
-      </div>
-      <div style="margin-top:10px;font-size:13px;font-weight:600;color:${scoreColor(global)}">${global>=80?'✅ Conforme':global>=60?'⚠️ Amélioration requise':'❌ Non conforme'}</div>` :
-      `<div style="font-size:48px;color:var(--text3)">—</div>
-      <div style="color:var(--text3);font-size:13px;margin-top:8px">Complétez les indicateurs pour obtenir votre score</div>`}
-    </div>
-
-    <!-- Stats rapides -->
-    <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
-      <div class="stat-card green"><div class="stat-label">Stagiaires actifs</div><div class="stat-value green">${nbStags}</div><div class="stat-sub">${promotions.length} promotion(s)</div></div>
-      <div class="stat-card blue"><div class="stat-label">Formateurs</div><div class="stat-value blue">${nbFmtrs}</div><div class="stat-sub">Intervenants externes</div></div>
-      <div class="stat-card ${tauxPres!==null?(tauxPres>=80?'green':tauxPres>=60?'amber':'red'):'blue'}">
-        <div class="stat-label">Taux de présence</div>
-        <div class="stat-value ${tauxPres!==null?(tauxPres>=80?'green':tauxPres>=60?'amber':'red'):'blue'}">${tauxPres!==null?tauxPres+'%':'—'}</div>
-        <div class="stat-sub">Indicateur 4.1 Qualiopi</div>
-      </div>
-      <div class="stat-card ${tauxEmarg!==null?(tauxEmarg>=80?'green':tauxEmarg>=60?'amber':'red'):'teal'}">
-        <div class="stat-label">Émargements signés</div>
-        <div class="stat-value ${tauxEmarg!==null?(tauxEmarg>=80?'green':tauxEmarg>=60?'amber':'red'):'teal'}">${tauxEmarg!==null?tauxEmarg+'%':'—'}</div>
-        <div class="stat-sub">Indicateur 6.1 Qualiopi</div>
-      </div>
-      <div class="stat-card teal"><div class="stat-label">Semaines CFA</div><div class="stat-value teal">${nbSems}</div><div class="stat-sub">Planifiées</div></div>
-      <div class="stat-card purple"><div class="stat-label">Émargements</div><div class="stat-value purple">${nbEmargs}</div><div class="stat-sub">Feuilles enregistrées</div></div>
-    </div>
-
-    <!-- Scores par critère -->
-    <div class="card">
-      <div class="card-header"><div class="card-title">Conformité par critère</div></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
-        ${QUALIOPI_CRITERES.map(c => {
-          const s = scoreCritere(c);
-          return `<div style="padding:14px;border:1px solid var(--border);border-radius:var(--radius-sm);border-left:4px solid ${c.color};background:var(--bg3);cursor:pointer;transition:all .15s" onclick="renderPageQualiopi('indicateurs')">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-              <div>
-                <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${c.icon} ${c.id}</div>
-                <div style="font-size:13px;font-weight:700;color:var(--text);margin-top:2px">${c.label}</div>
-              </div>
-              ${scoreRing(s)}
-            </div>
-            <div style="display:flex;gap:4px;flex-wrap:wrap">
-              ${c.indicateurs.map(ind => {
-                const sc = ind.auto ? getAutoScore(ind.fn) : store.getIndicateur(ind.id).score;
-                return `<span class="badge ${sc===null?'badge-gray':sc>=80?'badge-green':sc>=60?'badge-amber':'badge-red'}" style="font-size:10px">${ind.id}</span>`;
-              }).join('')}
-            </div>
-            <div style="margin-top:8px;font-size:11px;color:var(--text3)">${c.indicateurs.length} indicateur(s) · ${c.indicateurs.filter(i=>i.auto?getAutoScore(i.fn)!==null:store.getIndicateur(i.id).score!==null).length} renseigné(s)</div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-}
-
-// ─── TAB: INDICATEURS ─────────────────────────────────────────────────────────
-function renderQualiopiIndicateurs() {
-  return QUALIOPI_CRITERES.map(c => {
-    const scoreCrit = scoreCritere(c);
-    return `<div class="card" style="border-left:4px solid ${c.color}">
-      <div class="card-header">
-        <div>
-          <div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px">${c.icon} Critère ${c.id}</div>
-          <div class="card-title" style="margin-top:4px">${c.label}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          ${scoreRing(scoreCrit)}
-          ${scoreBadge(scoreCrit)}
-        </div>
-      </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Indicateur</th><th>Description</th><th>Type</th><th>Score</th><th>Note</th></tr></thead>
-        <tbody>${c.indicateurs.map(ind => {
-          const isAuto = ind.auto;
-          const autoVal = isAuto ? getAutoScore(ind.fn) : null;
-          const stored  = store.getIndicateur(ind.id);
-          const score   = isAuto ? autoVal : stored.score;
-          const note    = stored.note || '';
-          return `<tr>
-            <td class="td-bold" style="color:${c.color}">${ind.id}</td>
-            <td>${ind.label}</td>
-            <td>${isAuto ? '<span class="badge badge-hys">Auto ⚡</span>' : '<span class="badge badge-gray">Manuel</span>'}</td>
-            <td>${scoreBadge(score)}</td>
-            <td class="text-xs text-muted" style="max-width:180px">${note||'—'}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table></div>
-    </div>`;
-  }).join('');
-}
-
-// ─── TAB: PRÉSENCES ───────────────────────────────────────────────────────────
-function renderQualiopiPresences(filterPromo = '') {
-  const settings   = store.settings();
-  const promotions = settings.promotions || [];
-  let emargs = store.emargements();
-  if (filterPromo) emargs = emargs.filter(e => e.promotion === filterPromo);
-  emargs = emargs.sort((a,b) => b.date.localeCompare(a.date));
-
-  // Stats par promotion
-  const statsPromo = {};
-  promotions.forEach(p => {
-    const ea = store.emargements().filter(e => e.promotion === p);
-    const stags = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === p);
-    let totalPres = 0, totalAtt = 0;
-    ea.forEach(e => {
-      totalAtt += stags.length;
-      totalPres += Object.values(e.presences||{}).filter(Boolean).length;
-    });
-    statsPromo[p] = {
-      taux: totalAtt > 0 ? Math.round((totalPres/totalAtt)*100) : null,
-      seances: ea.length,
-      stags: stags.length,
-      signed: ea.filter(e=>e.signatureFormateur).length,
-    };
-  });
-
-  return `
-    <!-- Stats par promotion -->
-    <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:18px">
-      ${promotions.length === 0 ? '<div class="empty-state" style="padding:16px"><p>Aucune promotion configurée</p></div>' :
-      promotions.map(p => {
-        const s = statsPromo[p];
-        return `<div class="stat-card ${s.taux===null?'blue':s.taux>=80?'green':s.taux>=60?'amber':'red'}">
-          <div class="stat-label">${p}</div>
-          <div class="stat-value ${s.taux===null?'blue':s.taux>=80?'green':s.taux>=60?'amber':'red'}">${s.taux!==null?s.taux+'%':'—'}</div>
-          <div class="stat-sub">${s.seances} séance(s) · ${s.stags} stagiaire(s)</div>
-          <div class="stat-sub">${s.signed}/${s.seances} émarg. signés</div>
-        </div>`;
-      }).join('')}
-    </div>
-
-    <!-- Filtre -->
-    <div class="filters-bar">
-      <select class="form-control" id="qua-promo-filter" style="max-width:180px">
-        <option value="">Toutes promotions</option>
-        ${promotions.map(p=>`<option value="${p}" ${filterPromo===p?'selected':''}>${p}</option>`).join('')}
-      </select>
-      <button class="btn btn-ghost btn-sm" id="qua-pres-apply">Filtrer</button>
-    </div>
-
-    <!-- Liste émargements -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">Feuilles d'émargement (${emargs.length})</div>
-        <span class="badge ${emargs.filter(e=>e.signatureFormateur).length===emargs.length&&emargs.length>0?'badge-green':'badge-amber'}">${emargs.filter(e=>e.signatureFormateur).length}/${emargs.length} signées</span>
-      </div>
-      ${emargs.length === 0 ? '<div class="empty-state"><div class="icon">✍️</div><p>Aucun émargement enregistré</p></div>' :
-      `<div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Session</th><th>Promotion</th><th>Formateur</th><th>Présence</th><th>Signature</th><th>PDF</th></tr></thead>
-        <tbody>${emargs.map(e => {
-          const fmtr  = store.users().find(u=>u.id===e.formateurId);
-          const stags = store.stagiaires().filter(s=>s.statut==='actif'&&s.promotion===e.promotion);
-          const pres  = Object.values(e.presences||{}).filter(Boolean).length;
-          const taux  = stags.length>0 ? Math.round((pres/stags.length)*100) : 0;
-          return `<tr>
-            <td class="td-bold">${e.date}</td>
-            <td><span class="badge badge-blue">${DEMIJOURNEES[e.session]?.label||e.session}</span></td>
-            <td>${promoBadge(e.promotion)}</td>
-            <td class="text-xs">${fmtr?fmtr.prenom+' '+fmtr.nom:'—'}</td>
-            <td>
-              <span class="badge ${taux>=80?'badge-green':taux>=60?'badge-amber':'badge-red'}">${pres}/${stags.length} · ${taux}%</span>
-            </td>
-            <td>${e.signatureFormateur?'<span class="badge badge-green">✅ Signée</span>':'<span class="badge badge-amber">⏳ En attente</span>'}</td>
-            <td><button class="btn btn-ghost btn-xs qua-pdf-emarg" data-id="${e.id}">📄</button></td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table></div>`}
-    </div>`;
-}
-
-// ─── TAB: SAISIE MANUELLE ─────────────────────────────────────────────────────
-function renderQualiopiSaisie() {
-  return `
-    <div class="alert alert-info">✏️ Renseignez ici les indicateurs qui ne peuvent pas être calculés automatiquement (satisfaction, certification, insertion…)</div>
-    ${QUALIOPI_CRITERES.map(c => {
-      const manualInds = c.indicateurs.filter(i => !i.auto);
-      if (manualInds.length === 0) return '';
-      return `<div class="card" style="border-left:4px solid ${c.color}">
-        <div class="card-header"><div class="card-title">${c.icon} ${c.id} — ${c.label}</div></div>
-        <div style="display:flex;flex-direction:column;gap:14px">
-          ${manualInds.map(ind => {
-            const stored = store.getIndicateur(ind.id);
-            const score  = stored.score;
-            return `<div style="display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px;background:var(--bg3);border-radius:var(--radius-xs);border:1px solid var(--border)">
-              <div>
-                <div style="font-size:12px;font-weight:700;color:${c.color}">${ind.id}</div>
-                <div style="font-size:13px;font-weight:600;color:var(--text);margin-top:2px">${ind.label}</div>
-                <input type="text" class="form-control qua-note" data-id="${ind.id}"
-                  placeholder="Note / commentaire…"
-                  value="${stored.note||''}"
-                  style="margin-top:6px;font-size:12px;padding:6px 10px">
-              </div>
-              <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
-                <div style="font-size:10px;color:var(--text3);font-weight:600">Score %</div>
-                <input type="number" min="0" max="100" class="form-control qua-score" data-id="${ind.id}"
-                  value="${score!==null&&score!==undefined?score:''}"
-                  placeholder="0-100"
-                  style="width:72px;text-align:center;font-size:14px;font-weight:700;padding:6px 8px">
-              </div>
-              <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
-                ${scoreBadge(score)}
-                <button class="btn btn-primary btn-xs qua-save" data-id="${ind.id}" style="margin-top:4px">💾</button>
-              </div>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>`;
-    }).join('')}`;
-}
-
-// ─── EXPORT PDF QUALIOPI ──────────────────────────────────────────────────────
-async function exportQualiopiPDF() {
-  const settings = store.settings();
-  const global   = scoreGlobal();
-  const today    = new Date().toLocaleDateString('fr-FR');
-  toast('Génération rapport Qualiopi PDF…', 'info');
-
-  try {
-    const { doc, W, M } = await createHYSPDF('Rapport Qualiopi', `${settings.organisation} · ${today}`);
-    let y = 38;
-
-    // Score global
-    doc.setFillColor(46, 189, 107);
-    doc.roundedRect(M, y, W-2*M, 20, 3, 3, 'F');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(13);
-    doc.setTextColor(255,255,255);
-    doc.text(`Score global de conformité : ${global !== null ? global+'%' : 'Non calculé'}`, W/2, y+13, {align:'center'});
-    y += 26;
-
-    // Critères
-    QUALIOPI_CRITERES.forEach(c => {
-      if (y > 255) { doc.addPage(); y = 20; }
-      const sc = scoreCritere(c);
-      const [r,g,b] = hexToRgb(c.color);
-      doc.setFillColor(r,g,b);
-      doc.rect(M, y, 3, 14, 'F');
-      doc.setFillColor(245,248,245);
-      doc.rect(M+3, y, W-2*M-3, 14, 'F');
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(10);
-      doc.setTextColor(30,30,30);
-      doc.text(`${c.icon} ${c.id} — ${c.label}`, M+8, y+9);
-      if (sc !== null) {
-        doc.setTextColor(r,g,b);
-        doc.text(`${sc}%`, W-M-5, y+9, {align:'right'});
-      }
-      y += 16;
-
-      c.indicateurs.forEach(ind => {
-        const score = ind.auto ? getAutoScore(ind.fn) : store.getIndicateur(ind.id).score;
-        const note  = store.getIndicateur(ind.id).note || '';
-        doc.setFont('helvetica','normal');
-        doc.setFontSize(8.5);
-        doc.setTextColor(80,80,80);
-        doc.text(`  ${ind.id}`, M+6, y);
-        doc.setTextColor(30,30,30);
-        doc.text(ind.label, M+18, y);
-        if (score !== null) {
-          const [sr,sg,sb] = score>=80?[46,189,107]:score>=60?[245,158,11]:[239,68,68];
-          doc.setTextColor(sr,sg,sb);
-          doc.setFont('helvetica','bold');
-          doc.text(`${score}%`, W-M-5, y, {align:'right'});
-        } else {
-          doc.setTextColor(180,180,180);
-          doc.text('—', W-M-5, y, {align:'right'});
-        }
-        if (note) {
-          doc.setFont('helvetica','italic');
-          doc.setFontSize(7.5);
-          doc.setTextColor(120,120,120);
-          doc.text(`    Note : ${note.slice(0,80)}`, M+6, y+4.5);
-          y += 4.5;
-        }
-        y += 7;
-        if (y > 270) { doc.addPage(); y = 20; }
-      });
-      y += 4;
-    });
-
-    // Indicateurs Qualiopi automatiques
-    if (y > 240) { doc.addPage(); y = 20; }
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(10);
-    doc.setTextColor(30,30,30);
-    doc.text('Indicateurs calculés automatiquement', M, y); y += 8;
-    [
-      ['Indicateur 4.1 — Taux de présence apprenants', calcTauxPresence()],
-      ['Indicateur 6.1 — Taux émargements signés',     calcTauxEmargement()],
-      ['Nombre total d\'émargements',                   store.emargements().length+' feuilles'],
-      ['Nombre de stagiaires actifs',                   store.stagiaires().filter(s=>s.statut==='actif').length],
-      ['Nombre de semaines CFA planifiées',             store.semainesCfa().length],
-    ].forEach(([label, val]) => {
-      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,80,80);
-      doc.text(label, M+4, y);
-      doc.setFont('helvetica','bold');
-      doc.setTextColor(val!==null?[46,189,107]:[180,180,180]);
-      doc.text(val !== null ? String(val)+'%' : '—', W-M-5, y, {align:'right'});
-      y += 7;
-    });
-
-    // Footer
-    const np = doc.getNumberOfPages();
-    for(let p=1;p<=np;p++){
-      doc.setPage(p);
-      doc.setFillColor(46,189,107);
-      doc.rect(0,290,210,7,'F');
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(7);
-      doc.setTextColor(255,255,255);
-      doc.text(`${settings.organisation} · Rapport Qualiopi · ${today}`, M, 295);
-      doc.text(`Page ${p}/${np}`, W-M, 295, {align:'right'});
-    }
-
-    doc.save(`rapport_qualiopi_${new Date().toISOString().slice(0,10)}.pdf`);
-    store.addAudit({ action:'QUALIOPI_PDF', userId:currentUser.id, detail:`Rapport Qualiopi PDF exporté` });
-    toast('Rapport Qualiopi PDF téléchargé.', 'success');
-  } catch(err) {
-    console.error(err);
-    toast('Erreur PDF : '+err.message, 'error');
-  }
-}
-
-function hexToRgb(hex) {
-  const r = parseInt(hex.slice(1,3),16);
-  const g = parseInt(hex.slice(3,5),16);
-  const b = parseInt(hex.slice(5,7),16);
-  return [r,g,b];
-}
-
-// ─── EXPORT EXCEL QUALIOPI ────────────────────────────────────────────────────
-function exportQualiopiExcel() {
-  const settings = store.settings();
-  const today    = new Date().toLocaleDateString('fr-FR');
-  const rows = [
-    ['RAPPORT QUALIOPI — '+settings.organisation, '', '', ''],
-    ['Généré le : '+today, '', '', ''],
-    ['', '', '', ''],
-    ['Score global', scoreGlobal()!==null?scoreGlobal()+'%':'Non calculé', '', ''],
-    ['', '', '', ''],
-    ['INDICATEUR', 'DESCRIPTION', 'TYPE', 'SCORE', 'NOTE', 'DERNIÈRE MAJ'],
-  ];
-  QUALIOPI_CRITERES.forEach(c => {
-    rows.push([`=== ${c.id} — ${c.label} ===`, '', '', scoreCritere(c)!==null?scoreCritere(c)+'%':'—', '', '']);
-    c.indicateurs.forEach(ind => {
-      const isAuto = ind.auto;
-      const score  = isAuto ? getAutoScore(ind.fn) : store.getIndicateur(ind.id).score;
-      const stored = store.getIndicateur(ind.id);
-      rows.push([ind.id, ind.label, isAuto?'Automatique':'Manuel', score!==null?score+'%':'—', stored.note||'', stored.updatedAt?new Date(stored.updatedAt).toLocaleDateString('fr-FR'):'']);
-    });
-  });
-  rows.push(['', '', '', '', '', '']);
-  rows.push(['DONNÉES CALCULÉES AUTOMATIQUEMENT', '', '', '', '', '']);
-  rows.push(['Taux de présence apprenants (Ind. 4.1)', '', 'Auto', calcTauxPresence()!==null?calcTauxPresence()+'%':'—', '', '']);
-  rows.push(['Taux émargements signés (Ind. 6.1)',    '', 'Auto', calcTauxEmargement()!==null?calcTauxEmargement()+'%':'—', '', '']);
-  rows.push(['Nombre de stagiaires actifs',           '', 'Auto', store.stagiaires().filter(s=>s.statut==='actif').length, '', '']);
-  rows.push(['Nombre d\'émargements enregistrés',     '', 'Auto', store.emargements().length, '', '']);
-  rows.push(['Semaines CFA planifiées',               '', 'Auto', store.semainesCfa().length, '', '']);
-
-  // Feuille émargements
-  rows.push(['', '', '', '', '', '']);
-  rows.push(['DÉTAIL ÉMARGEMENTS', '', '', '', '', '']);
-  rows.push(['Date', 'Session', 'Promotion', 'Formateur', 'Présents/Total', 'Taux', 'Signé', '']);
-  store.emargements().sort((a,b)=>b.date.localeCompare(a.date)).forEach(e => {
-    const fmtr  = store.users().find(u=>u.id===e.formateurId);
-    const stags = store.stagiaires().filter(s=>s.statut==='actif'&&s.promotion===e.promotion);
-    const pres  = Object.values(e.presences||{}).filter(Boolean).length;
-    const taux  = stags.length>0?Math.round((pres/stags.length)*100):0;
-    rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', fmtr?fmtr.prenom+' '+fmtr.nom:'', `${pres}/${stags.length}`, taux+'%', e.signatureFormateur?'Oui':'Non', '']);
-  });
-
-  downloadCSV(rows, `qualiopi_${new Date().toISOString().slice(0,10)}.csv`);
-  store.addAudit({ action:'QUALIOPI_EXCEL', userId:currentUser.id, detail:'Rapport Qualiopi Excel exporté' });
-  toast('Rapport Qualiopi Excel téléchargé.', 'success');
-}
-
-// ─── LISTENERS SAISIE ─────────────────────────────────────────────────────────
-function attachQualiopiListeners() {
-  document.querySelectorAll('.qua-save').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id    = btn.getAttribute('data-id');
-      const scoreEl = document.querySelector(`.qua-score[data-id="${id}"]`);
-      const noteEl  = document.querySelector(`.qua-note[data-id="${id}"]`);
-      const score   = scoreEl?.value !== '' ? parseInt(scoreEl.value) : null;
-      const note    = noteEl?.value?.trim() || '';
-      store.saveIndicateur(id, { score, note });
-      store.addAudit({ action:'QUALIOPI_SAVE', userId:currentUser.id, detail:`Indicateur ${id} mis à jour : ${score}%` });
-      toast(`Indicateur ${id} sauvegardé.`, 'success');
-      renderPageQualiopi('saisie');
-    });
-  });
-  document.querySelectorAll('.qua-pdf-emarg').forEach(btn => {
-    btn.addEventListener('click', () => generatePDFEmargement(btn.getAttribute('data-id')));
-  });
-  document.getElementById('qua-pres-apply')?.addEventListener('click', () => {
-    renderPageQualiopi('emargements');
-    setTimeout(() => {
-      const sel = document.getElementById('qua-promo-filter');
-      // re-render with filter
-    }, 50);
-  });
-}
-
-
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  HYS PointPro — SPRINT 5 FINAL
 //  • Supabase Realtime (live updates entre appareils)
@@ -6779,7 +6173,7 @@ function renderPageNotifications() {
       ${notifs.length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">🔔</div><p>Aucune notification</p></div></div>` :
       `<div class="card" style="padding:0">
         ${notifs.map(n => {
-          const icons = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️' };
+          const icons = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯' };
           return `<div class="notif-item" data-id="${n.id}" style="display:flex;align-items:flex-start;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;background:${n.lu?'transparent':'var(--hys-green-light)'};transition:background .2s">
             <span style="font-size:20px;flex-shrink:0">${icons[n.type]||'•'}</span>
             <div style="flex:1;min-width:0">
@@ -6982,6 +6376,487 @@ renderPageExport = function() {
 
 
 // ─── INITIALISATION ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  HYS PointPro — MODULE OBJECTIFS
+//  • Import PDF (format « Objectifs mensuels » : 1 collaborateur / mois)
+//  • Page Objectifs : gestion (admin) + consultation (collaborateur)
+//  • Contrôle du vendredi à la sortie : le collaborateur déclare si les
+//    objectifs de la semaine sont atteints ; si NON → notification à la Direction
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── CHARGEMENT PDF.JS (à la demande, via CDN — comme jsPDF) ──────────────────
+let _pdfjsLoaded = false;
+function ensurePdfJs() {
+  return new Promise((resolve, reject) => {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    if (_pdfjsLoaded) {
+      const wait = setInterval(() => { if (window.pdfjsLib) { clearInterval(wait); resolve(window.pdfjsLib); } }, 100);
+      return;
+    }
+    _pdfjsLoaded = true;
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = () => {
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch {}
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = () => reject(new Error('pdf.js non chargé (connexion requise)'));
+    document.head.appendChild(s);
+  });
+}
+
+// ─── OUTILS OBJECTIFS ─────────────────────────────────────────────────────────
+function _normTxt(s) {
+  return (s || '').toString().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+}
+function _moisIndex(nom) {
+  const n = _normTxt(nom);
+  return MOIS.findIndex(m => _normTxt(m) === n);
+}
+// Utilisateurs pouvant recevoir des objectifs (tous les comptes actifs)
+function _usersObjectifs() {
+  return store.users().filter(u => u.statut === 'actif')
+    .sort((a, b) => (a.nom || '').localeCompare(b.nom || ''));
+}
+
+// ─── PARSING DU PDF ───────────────────────────────────────────────────────────
+// Reconstruit le tableau à partir des positions (x,y) des fragments de texte.
+async function parseObjectifsPDF(file) {
+  const pdfjs = await ensurePdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+
+  // 1) Récupérer tous les fragments avec coordonnées, sur toutes les pages
+  let items = [];
+  for (let pn = 1; pn <= pdf.numPages; pn++) {
+    const page = await pdf.getPage(pn);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    tc.items.forEach(it => {
+      const str = (it.str || '');
+      if (!str.trim()) return;
+      const x = it.transform[4];
+      const yTop = vp.height - it.transform[5]; // origine en haut
+      items.push({ x, y: yTop, str, page: pn });
+    });
+  }
+  if (!items.length) throw new Error('Aucun texte lisible dans le PDF.');
+
+  // 2) Regrouper en lignes (même y ± tolérance), triées de haut en bas
+  items.sort((a, b) => (a.page - b.page) || (a.y - b.y) || (a.x - b.x));
+  const lines = [];
+  const TOL = 4;
+  items.forEach(it => {
+    let ln = lines.find(l => l.page === it.page && Math.abs(l.y - it.y) <= TOL);
+    if (!ln) { ln = { page: it.page, y: it.y, items: [] }; lines.push(ln); }
+    ln.items.push(it);
+  });
+  lines.sort((a, b) => (a.page - b.page) || (a.y - b.y));
+  lines.forEach(l => l.items.sort((a, b) => a.x - b.x));
+  const lineText = l => l.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+
+  // 3) Titre → mois / année
+  let moisLabel = '', mois = '';
+  const titleLn = lines.find(l => /objectifs mensuels/i.test(lineText(l)));
+  if (titleLn) {
+    const after = lineText(titleLn).split(':').slice(1).join(':').trim(); // "Août 2026"
+    moisLabel = after || lineText(titleLn);
+    const m = after.match(/([A-Za-zûùôéèêàäïö]+)\s*(\d{4})/);
+    if (m) {
+      const idx = _moisIndex(m[1]);
+      if (idx >= 0) mois = `${m[2]}-${String(idx + 1).padStart(2, '0')}`;
+    }
+  }
+
+  // 4) Collaborateur → première ligne « Nom — Poste » (après le titre, avant l'en-tête)
+  let collaborateurNom = '', poste = '';
+  const titleIdx = titleLn ? lines.indexOf(titleLn) : -1;
+  for (let i = titleIdx + 1; i < lines.length; i++) {
+    const t = lineText(lines[i]);
+    if (/semaine/i.test(t) && /dates/i.test(t)) break; // en-tête atteint
+    if (t.includes('—') || t.includes(' - ')) {
+      const parts = t.split(/—| - /);
+      collaborateurNom = (parts[0] || '').trim();
+      poste = (parts[1] || '').trim();
+      break;
+    }
+  }
+
+  // 5) En-tête du tableau → bornes de colonnes (positions x)
+  const headerLn = lines.find(l => {
+    const t = _normTxt(lineText(l));
+    return t.includes('semaine') && t.includes('dates') && t.includes('statut');
+  });
+  // x de départ de chaque colonne (repli sur les valeurs mesurées du gabarit)
+  let cx = { sem: 60, dates: 96, statut: 205, obj: 272, acc: 485, rem: 655 };
+  if (headerLn) {
+    const findX = re => { const it = headerLn.items.find(i => re.test(_normTxt(i.str))); return it ? it.x : null; };
+    cx.sem    = findX(/^semaine$/) ?? cx.sem;
+    cx.dates  = findX(/^dates$/) ?? cx.dates;
+    cx.statut = findX(/^statut$/) ?? cx.statut;
+    cx.obj    = findX(/^objectifs$/) ?? cx.obj;
+    cx.acc    = findX(/^accueil$/) ?? cx.acc;
+    cx.rem    = findX(/remarque/) ?? cx.rem;
+  }
+  const bSemDates   = (cx.sem + cx.dates) / 2;
+  const bDatesStat  = (cx.dates + cx.statut) / 2;
+  const bStatObj    = (cx.statut + cx.obj) / 2;
+  const bObjAcc     = (cx.obj + cx.acc) / 2;
+  const bAccRem     = (cx.acc + cx.rem) / 2;
+  function colOf(x) {
+    if (x < bSemDates)  return 'sem';
+    if (x < bDatesStat) return 'dates';
+    if (x < bStatObj)   return 'statut';
+    if (x < bObjAcc)    return 'obj';
+    if (x < bAccRem)    return 'acc';
+    return 'rem';
+  }
+  const cellText = (ln, col) => ln.items.filter(i => colOf(i.x) === col).map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+
+  // 6) Balayage des lignes de données jusqu'à « Objectifs transversaux »
+  const semaines = [];
+  const transversaux = [];
+  let mode = 'table';
+  let cur = null;
+  const headerIdx = headerLn ? lines.indexOf(headerLn) : titleIdx + 2;
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const ln = lines[i];
+    const full = lineText(ln);
+    if (!full) continue;
+
+    if (/objectifs transversaux/i.test(full)) { mode = 'trans'; continue; }
+    if (/document etabli|document établi|conserver dans le drive/i.test(_normTxt(full))) break;
+
+    if (mode === 'trans') {
+      // Puces des objectifs transversaux (lignes pouvant être coupées)
+      const clean = full.replace(/^[•\-\u2022]\s*/, '').trim();
+      if (full.trim().startsWith('•') || full.trim().startsWith('-') || full.trim().startsWith('\u2022')) {
+        transversaux.push(clean);
+      } else if (transversaux.length) {
+        transversaux[transversaux.length - 1] += ' ' + clean;
+      }
+      continue;
+    }
+
+    const semCell = cellText(ln, 'sem');
+    const mSem = semCell.match(/semaine\s*(\d+)/i);
+    if (mSem) {
+      // Nouvelle semaine
+      cur = {
+        num: parseInt(mSem[1], 10),
+        datesLabel: cellText(ln, 'dates'),
+        statut: cellText(ln, 'statut'),
+        _objRaw: cellText(ln, 'obj'),
+        accueil: cellText(ln, 'acc'),
+        resultat: null, commentaire: '', evalueLe: null
+      };
+      semaines.push(cur);
+    } else if (cur) {
+      // Ligne de continuation de la semaine courante
+      const o = cellText(ln, 'obj'); if (o) cur._objRaw += ' ' + o;
+      const a = cellText(ln, 'acc'); if (a) cur.accueil = (cur.accueil + ' ' + a).trim();
+      if (!cur.datesLabel) cur.datesLabel = cellText(ln, 'dates');
+    }
+  }
+
+  // 7) Finaliser chaque semaine : découper les puces d'objectifs + parser les dates
+  const year = (mois && mois.slice(0, 4)) || String(new Date().getFullYear());
+  semaines.forEach(s => {
+    s.objectifs = (s._objRaw || '')
+      .split(/\s*[•\u2022]\s*/).map(x => x.trim()).filter(Boolean);
+    delete s._objRaw;
+    const [d1, d2] = parseDatesLabel(s.datesLabel, year, mois);
+    s.dateDebut = d1; s.dateFin = d2;
+  });
+  semaines.sort((a, b) => (a.dateDebut || '').localeCompare(b.dateDebut || '') || a.num - b.num);
+
+  return { mois, moisLabel, collaborateurNom, poste, transversaux, semaines };
+}
+
+// « 3 → 7 août » → ['2026-08-03','2026-08-07'] (année du mois du document)
+function parseDatesLabel(label, year, moisKey) {
+  if (!label) return [null, null];
+  const t = label.replace(/\u2192|->|–|—/g, '→');
+  // capture j1, j2 et un éventuel nom de mois (pour le mois de fin)
+  const m = t.match(/(\d{1,2})\s*(?:[a-zûéèêàäïö]+)?\s*→\s*(\d{1,2})\s*([a-zûéèêàäïö]+)?/i);
+  let monthIdx = moisKey ? (parseInt(moisKey.slice(5, 7), 10) - 1) : -1;
+  if (m && m[3]) { const mi = _moisIndex(m[3]); if (mi >= 0) monthIdx = mi; }
+  if (!m || monthIdx < 0) return [null, null];
+  const mm = String(monthIdx + 1).padStart(2, '0');
+  const d1 = `${year}-${mm}-${String(parseInt(m[1], 10)).padStart(2, '0')}`;
+  const d2 = `${year}-${mm}-${String(parseInt(m[2], 10)).padStart(2, '0')}`;
+  return [d1, d2];
+}
+
+// ─── SEMAINE COURANTE / CONTRÔLE DU VENDREDI ─────────────────────────────────
+// Renvoie {record, semaine} pour la semaine contenant la date donnée, ou null.
+function getObjectifCourant(userId, dateObj) {
+  const iso = dateStr(dateObj);
+  const recs = store.objectifs().filter(r => r.userId === userId);
+  for (const r of recs) {
+    for (const s of (r.semaines || [])) {
+      if (s.dateDebut && s.dateFin && iso >= s.dateDebut && iso <= s.dateFin) {
+        return { record: r, semaine: s };
+      }
+    }
+  }
+  return null;
+}
+// Le vendredi, si des objectifs existent pour la semaine et ne sont pas encore
+// évalués → renvoie {record, semaine}, sinon null.
+function objectifCheckPending(userId, dateObj) {
+  if (dateObj.getDay() !== 5) return null; // 5 = vendredi
+  const cur = getObjectifCourant(userId, dateObj);
+  if (cur && cur.semaine && cur.semaine.resultat == null && (cur.semaine.objectifs || []).length) return cur;
+  return null;
+}
+
+function openObjectifCheckModal(pend, onDone) {
+  const { record, semaine } = pend;
+  const objs = (semaine.objectifs || []).map(o => `<li style="margin:4px 0">${esc(o)}</li>`).join('');
+  openModal('🎯 Objectifs de la semaine',
+    `<p style="margin:0 0 10px;color:var(--text2)">Avant d'enregistrer votre sortie, indiquez si vous avez atteint vos objectifs de la semaine <strong>${esc(semaine.datesLabel || '')}</strong>.</p>
+     <ul style="margin:0 0 14px;padding-left:20px">${objs || '<li>—</li>'}</ul>
+     <div style="display:flex;gap:10px;margin-bottom:12px">
+       <label style="flex:1;display:flex;align-items:center;gap:8px;padding:12px;border:2px solid var(--border);border-radius:var(--radius-sm);cursor:pointer" id="obj-lab-oui">
+         <input type="radio" name="obj-res" value="oui"> <span>✅ Oui, atteints</span></label>
+       <label style="flex:1;display:flex;align-items:center;gap:8px;padding:12px;border:2px solid var(--border);border-radius:var(--radius-sm);cursor:pointer" id="obj-lab-non">
+         <input type="radio" name="obj-res" value="non"> <span>❌ Non, pas tous</span></label>
+     </div>
+     <label class="text-xs text-muted">Commentaire (obligatoire si non atteints)</label>
+     <textarea id="obj-comment" class="form-control" rows="3" placeholder="Précisez ce qui a été fait / ce qui reste…"></textarea>`,
+    [
+      { cls: 'btn-ghost', label: 'Annuler', action: () => closeModal() },
+      { cls: 'btn-primary', label: 'Valider et enregistrer la sortie', action: () => {
+        const res = document.querySelector('input[name="obj-res"]:checked')?.value;
+        const com = (document.getElementById('obj-comment')?.value || '').trim();
+        if (!res) { toast('Sélectionnez Oui ou Non.', 'warning'); return; }
+        if (res === 'non' && !com) { toast('Le commentaire est obligatoire si les objectifs ne sont pas atteints.', 'warning'); return; }
+        // Enregistrer le résultat dans la semaine
+        const recs = store.objectifs();
+        const r = recs.find(x => x.id === record.id);
+        if (r) {
+          const s = (r.semaines || []).find(x => x.num === semaine.num && x.dateDebut === semaine.dateDebut);
+          if (s) { s.resultat = res; s.commentaire = com; s.evalueLe = now(); }
+          r.updatedAt = now();
+          store.saveObjectifs(recs);
+        }
+        store.addAudit({ action: 'OBJECTIF_EVAL', userId: currentUser.id, detail: `Objectifs semaine ${semaine.datesLabel} : ${res === 'oui' ? 'ATTEINTS' : 'NON ATTEINTS'}${com ? ' — ' + com : ''}` });
+        if (res === 'non') {
+          store.addNotif({ type: 'objectif_alerte', userId: currentUser.id,
+            message: `⚠️ Objectifs NON atteints — ${esc(currentUser.prenom)} ${esc(currentUser.nom)}, semaine ${esc(semaine.datesLabel || '')}.${com ? ' Motif : ' + esc(com) : ''}` });
+        } else {
+          store.addNotif({ type: 'objectif_ok', userId: currentUser.id,
+            message: `✅ Objectifs atteints — ${esc(currentUser.prenom)} ${esc(currentUser.nom)}, semaine ${esc(semaine.datesLabel || '')}.` });
+        }
+        closeModal();
+        if (typeof onDone === 'function') onDone();
+      } }
+    ], true);
+  // surbrillance du label sélectionné
+  setTimeout(() => {
+    document.querySelectorAll('input[name="obj-res"]').forEach(r => r.addEventListener('change', () => {
+      document.getElementById('obj-lab-oui').style.borderColor = r.value === 'oui' && r.checked ? 'var(--hys-green)' : 'var(--border)';
+      document.getElementById('obj-lab-non').style.borderColor = r.value === 'non' && r.checked ? '#ef4444' : 'var(--border)';
+    }));
+  }, 50);
+}
+
+// ─── PAGE OBJECTIFS ───────────────────────────────────────────────────────────
+function renderPageObjectifs() {
+  if (isAdmin()) return renderPageObjectifsAdmin();
+  return renderPageObjectifsCollab();
+}
+
+function _semResultBadge(s) {
+  if (s.resultat === 'oui') return '<span class="badge badge-green">✅ Atteints</span>';
+  if (s.resultat === 'non') return '<span class="badge badge-red">❌ Non atteints</span>';
+  return '<span class="badge badge-gray">⏳ À évaluer</span>';
+}
+
+// --- Vue COLLABORATEUR : mes objectifs ---
+function renderPageObjectifsCollab() {
+  const recs = store.objectifs().filter(r => r.userId === currentUser.id)
+    .sort((a, b) => (b.mois || '').localeCompare(a.mois || ''));
+  const cur = getObjectifCourant(currentUser.id, new Date());
+  const main = document.getElementById('main-content');
+
+  const curCard = cur ? `
+    <div class="card" style="border-left:4px solid var(--hys-green)">
+      <div class="card-header"><div class="card-title">🎯 Semaine en cours · ${esc(cur.semaine.datesLabel || '')}</div>${_semResultBadge(cur.semaine)}</div>
+      <ul style="margin:8px 0 4px;padding-left:20px">${(cur.semaine.objectifs || []).map(o => `<li style="margin:4px 0">${esc(o)}</li>`).join('') || '<li>—</li>'}</ul>
+      ${cur.semaine.resultat == null ? `<p class="text-xs text-muted" style="margin-top:8px">ℹ️ Vous confirmerez l'atteinte de ces objectifs <strong>vendredi</strong>, au moment de pointer votre sortie.</p>` : `<p class="text-xs text-muted" style="margin-top:8px">${cur.semaine.commentaire ? 'Votre commentaire : ' + esc(cur.semaine.commentaire) : ''}</p>`}
+    </div>` : `<div class="card"><div class="empty-state"><div class="icon">🎯</div><p>Aucun objectif défini pour la semaine en cours.</p></div></div>`;
+
+  main.innerHTML = `
+    <div class="page-header"><div class="page-header-left"><h2>🎯 Mes objectifs</h2><p>${esc(currentUser.prenom)} ${esc(currentUser.nom)}</p></div></div>
+    <div class="page-body">
+      ${curCard}
+      ${recs.map(r => `
+        <div class="card">
+          <div class="card-header"><div class="card-title">${esc(r.moisLabel || r.mois)}</div></div>
+          ${(r.transversaux || []).length ? `<div style="margin-bottom:10px"><div class="text-xs text-muted" style="margin-bottom:4px">Objectifs transversaux du mois</div><ul style="margin:0;padding-left:20px">${r.transversaux.map(t => `<li style="margin:3px 0">${esc(t)}</li>`).join('')}</ul></div>` : ''}
+          <div class="table-wrap"><table>
+            <thead><tr><th>Semaine</th><th>Objectifs</th><th>Résultat</th></tr></thead>
+            <tbody>${(r.semaines || []).map(s => `<tr>
+              <td class="td-bold">${esc(s.datesLabel || ('S' + s.num))}</td>
+              <td><ul style="margin:0;padding-left:16px">${(s.objectifs || []).map(o => `<li>${esc(o)}</li>`).join('') || '—'}</ul></td>
+              <td>${_semResultBadge(s)}${s.commentaire ? `<div class="text-xs text-muted" style="margin-top:3px">${esc(s.commentaire)}</div>` : ''}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </div>`).join('') || (cur ? '' : '')}
+    </div>`;
+}
+
+// --- Vue ADMIN : gestion + import ---
+function renderPageObjectifsAdmin() {
+  const recs = store.objectifs().sort((a, b) => (b.mois || '').localeCompare(a.mois || '') || (a.collaborateurNom || '').localeCompare(b.collaborateurNom || ''));
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🎯 Objectifs</h2><p>Import PDF & suivi des objectifs par collaborateur</p></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" id="obj-import-btn">📄 Importer un PDF</button>
+        <input type="file" id="obj-file-input" accept="application/pdf" style="display:none">
+      </div>
+    </div>
+    <div class="page-body">
+      ${recs.length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">🎯</div><p>Aucun objectif importé.</p><p class="text-xs text-muted">Cliquez sur « Importer un PDF » et déposez un document « Objectifs mensuels ».</p></div></div>` :
+      recs.map(r => {
+        const nbEval = (r.semaines || []).filter(s => s.resultat != null).length;
+        const nbNon  = (r.semaines || []).filter(s => s.resultat === 'non').length;
+        return `<div class="card">
+          <div class="card-header">
+            <div><div class="card-title">${esc(r.collaborateurNom || '—')} · ${esc(r.moisLabel || r.mois)}</div>
+            <div class="text-xs text-muted" style="margin-top:2px">${esc(r.poste || '')} · ${(r.semaines || []).length} semaine(s) · ${nbEval} évaluée(s)${nbNon ? ` · <span style="color:#ef4444">${nbNon} non atteinte(s)</span>` : ''}</div></div>
+            <button class="btn btn-ghost btn-sm obj-del" data-id="${r.id}">🗑 Supprimer</button>
+          </div>
+          ${(r.transversaux || []).length ? `<div style="margin-bottom:10px"><div class="text-xs text-muted" style="margin-bottom:4px">Objectifs transversaux</div><ul style="margin:0;padding-left:20px">${r.transversaux.map(t => `<li style="margin:3px 0">${esc(t)}</li>`).join('')}</ul></div>` : ''}
+          <div class="table-wrap"><table>
+            <thead><tr><th>Semaine</th><th>Dates</th><th>Objectifs</th><th>Résultat</th></tr></thead>
+            <tbody>${(r.semaines || []).map(s => `<tr>
+              <td class="td-bold">S${s.num}</td>
+              <td>${esc(s.datesLabel || '')}</td>
+              <td><ul style="margin:0;padding-left:16px">${(s.objectifs || []).map(o => `<li>${esc(o)}</li>`).join('') || '—'}</ul></td>
+              <td>${_semResultBadge(s)}${s.commentaire ? `<div class="text-xs text-muted" style="margin-top:3px">${esc(s.commentaire)}</div>` : ''}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  document.getElementById('obj-import-btn')?.addEventListener('click', () => {
+    if (!navigator.onLine) { toast("Connexion requise pour lire un PDF.", 'warning'); return; }
+    document.getElementById('obj-file-input')?.click();
+  });
+  document.getElementById('obj-file-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    e.target.value = '';
+    toast('Lecture du PDF…', 'info');
+    try {
+      const parsed = await parseObjectifsPDF(file);
+      openObjectifImportPreview(parsed);
+    } catch (err) {
+      console.error('[Objectifs] parse:', err);
+      toast('❌ ' + (err.message || 'Lecture du PDF impossible'), 'error');
+    }
+  });
+  document.querySelectorAll('.obj-del').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.getAttribute('data-id');
+    if (!confirm('Supprimer ces objectifs ?')) return;
+    store.saveObjectifs(store.objectifs().filter(r => r.id !== id));
+    toast('Objectifs supprimés.', 'success'); renderPageObjectifsAdmin();
+  }));
+}
+
+// --- Aperçu / validation avant enregistrement ---
+function openObjectifImportPreview(parsed) {
+  const users = _usersObjectifs();
+  // Pré-sélection du collaborateur par correspondance de nom
+  const target = _normTxt(parsed.collaborateurNom);
+  let matchId = '';
+  users.forEach(u => {
+    const a = _normTxt(u.prenom + ' ' + u.nom), b = _normTxt(u.nom + ' ' + u.prenom);
+    if (target && (a === target || b === target || target.includes(_normTxt(u.nom)))) matchId = u.id;
+  });
+
+  const semHtml = parsed.semaines.map((s, i) => `
+    <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:8px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">Semaine ${s.num} · ${esc(s.datesLabel || '')} ${(!s.dateDebut ? '<span class="badge badge-amber">dates non reconnues</span>' : '')}</div>
+      <label class="text-xs text-muted">Objectifs (une ligne par objectif)</label>
+      <textarea class="form-control obj-prev-sem" data-i="${i}" rows="${Math.max(2, (s.objectifs || []).length)}">${(s.objectifs || []).map(esc).join('\n')}</textarea>
+    </div>`).join('');
+
+  openModal('📄 Aperçu de l\'import — ' + (parsed.moisLabel || ''),
+    `<div style="margin-bottom:12px">
+       <label class="text-xs text-muted">Collaborateur concerné</label>
+       <select id="obj-prev-user" class="form-control">
+         <option value="">— Choisir —</option>
+         ${users.map(u => `<option value="${u.id}" ${u.id === matchId ? 'selected' : ''}>${esc(u.prenom)} ${esc(u.nom)}${u.role === ROLES.FORMATEUR ? ' (formateur)' : ''}</option>`).join('')}
+       </select>
+       ${parsed.collaborateurNom ? `<div class="text-xs text-muted" style="margin-top:3px">Détecté dans le PDF : « ${esc(parsed.collaborateurNom)}${parsed.poste ? ' — ' + esc(parsed.poste) : ''} »</div>` : ''}
+     </div>
+     <div style="margin-bottom:12px">
+       <label class="text-xs text-muted">Mois</label>
+       <input type="text" id="obj-prev-mois" class="form-control" value="${esc(parsed.moisLabel || '')}">
+     </div>
+     <div style="margin-bottom:12px">
+       <label class="text-xs text-muted">Objectifs transversaux du mois (une ligne chacun)</label>
+       <textarea id="obj-prev-trans" class="form-control" rows="${Math.max(2, (parsed.transversaux || []).length)}">${(parsed.transversaux || []).map(esc).join('\n')}</textarea>
+     </div>
+     <div class="card-title" style="margin:6px 0">Semaines (${parsed.semaines.length})</div>
+     ${semHtml || '<p class="text-muted">Aucune semaine détectée.</p>'}`,
+    [
+      { cls: 'btn-ghost', label: 'Annuler', action: () => closeModal() },
+      { cls: 'btn-primary', label: 'Enregistrer', action: () => saveObjectifImport(parsed) }
+    ], true);
+}
+
+function saveObjectifImport(parsed) {
+  const userId = document.getElementById('obj-prev-user')?.value;
+  if (!userId) { toast('Sélectionnez le collaborateur concerné.', 'warning'); return; }
+  const moisLabel = (document.getElementById('obj-prev-mois')?.value || parsed.moisLabel || '').trim();
+  const transversaux = (document.getElementById('obj-prev-trans')?.value || '').split('\n').map(x => x.trim()).filter(Boolean);
+  const semaines = parsed.semaines.map((s, i) => {
+    const ta = document.querySelector(`.obj-prev-sem[data-i="${i}"]`);
+    const objectifs = (ta ? ta.value : '').split('\n').map(x => x.trim()).filter(Boolean);
+    return { num: s.num, datesLabel: s.datesLabel, dateDebut: s.dateDebut, dateFin: s.dateFin,
+             statut: s.statut, objectifs, accueil: s.accueil, resultat: s.resultat ?? null,
+             commentaire: s.commentaire || '', evalueLe: s.evalueLe || null };
+  });
+  const u = store.users().find(x => x.id === userId);
+  const recs = store.objectifs();
+  // Remplacer un enregistrement existant (même collaborateur + même mois) en
+  // conservant les auto-évaluations déjà saisies pour les semaines identiques.
+  const existing = recs.find(r => r.userId === userId && r.mois === parsed.mois && parsed.mois);
+  if (existing) {
+    semaines.forEach(ns => {
+      const old = (existing.semaines || []).find(os => os.num === ns.num);
+      if (old && old.resultat != null) { ns.resultat = old.resultat; ns.commentaire = old.commentaire; ns.evalueLe = old.evalueLe; }
+    });
+  }
+  const rec = {
+    id: existing ? existing.id : uid(),
+    userId,
+    collaborateurNom: u ? (u.prenom + ' ' + u.nom) : parsed.collaborateurNom,
+    poste: parsed.poste || (u ? u.fonction : '') || '',
+    mois: parsed.mois || moisLabel,
+    moisLabel,
+    transversaux, semaines,
+    createdAt: existing ? existing.createdAt : now(),
+    updatedAt: now(), createdBy: currentUser.id
+  };
+  const next = recs.filter(r => r.id !== rec.id);
+  next.push(rec);
+  store.saveObjectifs(next);
+  store.addAudit({ action: 'OBJECTIF_IMPORT', userId: currentUser.id, detail: `Objectifs importés pour ${rec.collaborateurNom} — ${moisLabel} (${semaines.length} semaines)` });
+  closeModal();
+  toast('✅ Objectifs enregistrés.', 'success');
+  renderPageObjectifsAdmin();
+}
+
 async function init() {
   await initDefaultData();
   await seedCollabsHYS();
