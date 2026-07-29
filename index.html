@@ -2055,89 +2055,6 @@ function importStagiairesCSV(event) {
   if (event.target) event.target.value = '';
 }
 
-// ─── PAGE: CALENDRIER ALTERNANCE ──────────────────────────────────────────────
-function renderPageAlternance() {
-  const semaines = store.semainesCfa().sort((a,b) => a.debut.localeCompare(b.debut));
-  const settings = store.settings();
-  const promotions = settings.promotions || [];
-
-  const main = document.getElementById('main-content');
-  main.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left"><h2>📆 Calendrier alternance</h2><p>Semaines CFA / Entreprise</p></div>
-      <button class="btn btn-primary btn-sm" id="alt-add">＋ Ajouter semaine CFA</button>
-    </div>
-    <div class="page-body">
-      <div class="alert alert-info">📌 Définissez les semaines de présence au CFA. En dehors de ces semaines, les apprenants sont en entreprise.</div>
-      <div class="card">
-        <div class="table-wrap"><table>
-          <thead><tr><th>Du</th><th>Au</th><th>Promotion</th><th>Thème / Module</th><th>Statut</th><th>Actions</th></tr></thead>
-          <tbody>${semaines.length === 0 ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text3)">Aucune semaine CFA définie</td></tr>` :
-          semaines.map(s => {
-            const today = dateStr(new Date());
-            const isActive = today >= s.debut && today <= s.fin;
-            const isPast = today > s.fin;
-            return `<tr>
-              <td class="td-bold">${s.debut}</td>
-              <td>${s.fin}</td>
-              <td>${promoBadge(s.promotion)}</td>
-              <td class="text-xs text-muted">${s.theme||'—'}</td>
-              <td><span class="badge ${isActive?'badge-green':isPast?'badge-gray':'badge-blue'}">${isActive?'✅ En cours':isPast?'Terminée':'À venir'}</span></td>
-              <td>
-                <button class="btn btn-danger btn-xs alt-del" data-id="${s.id}">🗑</button>
-              </td>
-            </tr>`;
-          }).join('')}
-          </tbody>
-        </table></div>
-      </div>
-    </div>`;
-
-  document.getElementById('alt-add')?.addEventListener('click', () => showModalAddSemaineCfa(promotions));
-  document.querySelectorAll('.alt-del').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (!confirm('Supprimer cette semaine CFA ?')) return;
-      const sems = store.semainesCfa().filter(s => s.id !== btn.getAttribute('data-id'));
-      store.saveSemainesCfa(sems);
-      toast('Semaine supprimée.','info');
-      renderPageAlternance();
-    });
-  });
-}
-
-function showModalAddSemaineCfa(promotions) {
-  openModal('📆 Nouvelle semaine CFA', `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Du (lundi) *</label><input id="alt-deb" type="date" class="form-control"></div>
-      <div class="form-group"><label>Au (vendredi) *</label><input id="alt-fin" type="date" class="form-control"></div>
-    </div>
-    <div class="form-group"><label>Promotion *</label>
-      <select id="alt-promo" class="form-control">
-        <option value="">-- Choisir --</option>
-        ${promotions.map(p => `<option value="${p}">${p}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group"><label>Thème / Module</label><input id="alt-theme" class="form-control" placeholder="ex: Module Hygiène alimentaire"></div>
-    <div id="alt-err" style="display:none"></div>`,
-    [
-      { label:'Annuler', cls:'btn-ghost', action:closeModal },
-      { label:'➕ Ajouter', cls:'btn-primary', action:() => {
-        const deb = document.getElementById('alt-deb')?.value;
-        const fin = document.getElementById('alt-fin')?.value;
-        const promo = document.getElementById('alt-promo')?.value;
-        const theme = document.getElementById('alt-theme')?.value?.trim();
-        const err = document.getElementById('alt-err');
-        if (!deb||!fin||!promo) { showAlert(err,'⚠️ Date début, fin et promotion sont obligatoires.','danger'); return; }
-        if (deb > fin) { showAlert(err,'⚠️ Date début > date fin.','danger'); return; }
-        const sems = store.semainesCfa();
-        sems.push({ id:uid(), debut:deb, fin, promotion:promo, theme:theme||'', createdAt:now() });
-        store.saveSemainesCfa(sems);
-        store.addAudit({ action:'SEMAINE_CFA_ADD', userId:currentUser.id, detail:`Semaine CFA ${deb}→${fin} (${promo}) ajoutée` });
-        closeModal(); toast('Semaine CFA ajoutée.','success'); renderPageAlternance();
-      }}
-    ]);
-}
-
 // ─── PAGE: POINTAGES ADMIN ────────────────────────────────────────────────────
 function renderPagePointageAdmin(filterDate='', filterUser='') {
   const today = dateStr(new Date());
@@ -3919,124 +3836,6 @@ async function generatePDFConvocation(formateurId, semaineCfaId) {
     console.error(err);
     toast('Erreur génération PDF : ' + err.message, 'error');
   }
-}
-
-// ─── PAGE: PLANNING CFA HEBDOMADAIRE ─────────────────────────────────────────
-function renderPagePlanningCFA(weekOffset = 0) {
-  // Calculate current week
-  const today = new Date();
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + weekOffset * 7);
-  const days = Array.from({ length: 5 }, (_, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    return { date: dateStr(d), label: JOURS[d.getDay()], dayNum: d.getDate() };
-  });
-  const weekStart = days[0].date;
-  const weekEnd   = days[4].date;
-  const semCfa = store.semainesCfa().find(s => weekStart >= s.debut && weekStart <= s.fin || weekEnd >= s.debut && weekEnd <= s.fin);
-  const formateurs = store.users().filter(u => u.role === ROLES.FORMATEUR && u.statut === 'actif');
-  const settings   = store.settings();
-
-  const main = document.getElementById('main-content');
-  main.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <h2>📅 Planning CFA</h2>
-        <p>Semaine du ${weekStart} au ${weekEnd}
-          ${semCfa ? ` · <span class="semaine-badge semaine-cfa">🎓 ${semCfa.promotion}</span>` : ` · <span class="semaine-badge semaine-entreprise">🏢 Semaine entreprise</span>`}
-        </p>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" id="week-prev">← Précédente</button>
-        <button class="btn btn-ghost btn-sm" id="week-today">Aujourd'hui</button>
-        <button class="btn btn-ghost btn-sm" id="week-next">Suivante →</button>
-        <button class="btn btn-primary btn-sm" id="planning-pdf">🖨 PDF semaine</button>
-      </div>
-    </div>
-    <div class="page-body">
-      ${!semCfa ? `<div class="alert alert-warning">⚠️ Cette semaine n'est pas dans le calendrier CFA. Les apprenants sont en entreprise.</div>` : `<div class="alert alert-success">✅ Semaine CFA active — Promotion <strong>${semCfa.promotion}</strong>${semCfa.theme ? ' · ' + semCfa.theme : ''}</div>`}
-
-      <!-- Planning grid -->
-      <div class="card" style="padding:0;overflow:hidden">
-        <div style="display:grid;grid-template-columns:140px repeat(5,1fr);border-bottom:1px solid var(--border)">
-          <div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;border-right:1px solid var(--border);background:var(--bg3)">Formateur</div>
-          ${days.map(d => {
-            const isToday = d.date === dateStr(new Date());
-            const isCfa = semCfa && d.date >= semCfa.debut && d.date <= semCfa.fin;
-            return `<div style="padding:8px;text-align:center;border-right:1px solid var(--border);background:${isToday ? 'rgba(46,189,107,.08)' : isCfa ? 'rgba(46,189,107,.04)' : 'var(--bg3)'};border-bottom:${isToday ? '2px solid var(--hys-green)' : 'none'}">
-              <div style="font-size:11px;font-weight:700;color:${isToday ? 'var(--hys-green)' : 'var(--text2)'}">${d.label}</div>
-              <div style="font-size:18px;font-weight:800;color:${isToday ? 'var(--hys-green)' : 'var(--text)'}">${d.dayNum}</div>
-            </div>`;
-          }).join('')}
-        </div>
-
-        <!-- Morning row -->
-        <div style="display:grid;grid-template-columns:140px repeat(5,1fr);border-bottom:1px solid var(--border)">
-          <div style="padding:8px 14px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;border-right:1px solid var(--border);background:var(--bg3);display:flex;align-items:center">🌅 Matin</div>
-          ${days.map(d => {
-            const pts = formateurs.flatMap(f => getPointagesUserDay(f.id, d.date).filter(p => p.type === 'entree' && p.heure < '12:00'));
-            const emargs = store.emargements().filter(e => e.date === d.date && e.session === 'matin' && semCfa && e.promotion === semCfa.promotion);
-            return `<div style="padding:6px;border-right:1px solid var(--border);min-height:60px;background:${semCfa && d.date >= semCfa.debut && d.date <= semCfa.fin ? 'rgba(46,189,107,.02)' : 'transparent'}">
-              ${pts.length > 0 ? pts.map(p => {
-                const f = formateurs.find(u => getPointagesUserDay(u.id, d.date).some(x => x.id === p.id));
-                return `<div style="font-size:10px;background:rgba(46,189,107,.1);border-radius:4px;padding:2px 5px;margin-bottom:2px;color:var(--hys-green);font-weight:600">${f ? f.prenom.charAt(0)+'. '+f.nom.split(' ')[0] : '—'}</div>`;
-              }).join('') : '<div style="font-size:10px;color:var(--text3);text-align:center;padding:8px 0">—</div>'}
-              ${emargs.length > 0 ? `<div style="font-size:9px;color:var(--blue3);background:rgba(59,130,246,.08);border-radius:4px;padding:2px 4px;margin-top:2px">✍ ${emargs.length} émarg.</div>` : ''}
-            </div>`;
-          }).join('')}
-        </div>
-
-        <!-- Afternoon row -->
-        <div style="display:grid;grid-template-columns:140px repeat(5,1fr)">
-          <div style="padding:8px 14px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;border-right:1px solid var(--border);background:var(--bg3);display:flex;align-items:center">🌇 Après-midi</div>
-          ${days.map(d => {
-            const pts = formateurs.flatMap(f => getPointagesUserDay(f.id, d.date).filter(p => p.type === 'entree' && p.heure >= '12:00'));
-            const emargs = store.emargements().filter(e => e.date === d.date && e.session === 'apresmidi' && semCfa && e.promotion === semCfa.promotion);
-            return `<div style="padding:6px;border-right:1px solid var(--border);min-height:60px;background:${semCfa && d.date >= semCfa.debut && d.date <= semCfa.fin ? 'rgba(46,189,107,.02)' : 'transparent'}">
-              ${pts.length > 0 ? pts.map(p => {
-                const f = formateurs.find(u => getPointagesUserDay(u.id, d.date).some(x => x.id === p.id));
-                return `<div style="font-size:10px;background:rgba(46,189,107,.1);border-radius:4px;padding:2px 5px;margin-bottom:2px;color:var(--hys-green);font-weight:600">${f ? f.prenom.charAt(0)+'. '+f.nom.split(' ')[0] : '—'}</div>`;
-              }).join('') : '<div style="font-size:10px;color:var(--text3);text-align:center;padding:8px 0">—</div>'}
-              ${emargs.length > 0 ? `<div style="font-size:9px;color:var(--blue3);background:rgba(59,130,246,.08);border-radius:4px;padding:2px 4px;margin-top:2px">✍ ${emargs.length} émarg.</div>` : ''}
-            </div>`;
-          }).join('')}
-        </div>
-
-        <!-- Formateurs présence row -->
-        <div style="border-top:2px solid var(--border)">
-          <div style="padding:8px 14px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;background:var(--bg3);border-bottom:1px solid var(--border)">Récap présence formateurs</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:10px">
-            ${formateurs.length === 0
-              ? '<div style="color:var(--text3);font-size:12px">Aucun formateur</div>'
-              : formateurs.map(f => {
-                const joursPres = days.filter(d => {
-                  const pts = getPointagesUserDay(f.id, d.date);
-                  return pts.length > 0;
-                }).length;
-                return `<div style="background:var(--bg3);border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;border:1px solid var(--border)" onclick="showModalConvocation('${f.id}')">
-                  <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--hys-green),var(--hys-green2));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0">${(f.prenom[0]||'')+(f.nom[0]||'')}</div>
-                  <div style="min-width:0">
-                    <div style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(f.prenom)} ${esc(f.nom)}</div>
-                    <div style="font-size:10px;color:var(--text3)">${joursPres}/5 j · <span style="color:var(--hys-green)">Conv. PDF</span></div>
-                  </div>
-                </div>`;
-              }).join('')}
-          </div>
-        </div>
-      </div>
-
-      <!-- Semaines CFA à venir -->
-      <div class="card">
-        <div class="card-header"><div class="card-title">📆 Prochaines semaines CFA</div></div>
-        ${renderProchainsSemaines()}
-      </div>
-    </div>`;
-
-  document.getElementById('week-prev')?.addEventListener('click', () => renderPagePlanningCFA(weekOffset - 1));
-  document.getElementById('week-next')?.addEventListener('click', () => renderPagePlanningCFA(weekOffset + 1));
-  document.getElementById('week-today')?.addEventListener('click', () => renderPagePlanningCFA(0));
-  document.getElementById('planning-pdf')?.addEventListener('click', () => generatePDFPlanning(weekStart, weekEnd, semCfa));
 }
 
 function renderProchainsSemaines() {
@@ -5893,16 +5692,22 @@ function initSupabaseRealtime() {
     if (!navigator.onLine || !supa.isConfigured()) return;
     const pagesBesoinSync = ['presence-rt', 'dashboard-dg', 'emargements-admin'];
     if (pagesBesoinSync.includes(currentPage)) {
+      let changed = false;
+      // Écriture directe (setter non patché) : ces données viennent DU serveur,
+      // inutile de les repousser — l'ancien code recréait une boucle pull→push à chaque cycle.
       const pts = await supa.select('hys_pointages', 'limit=200');
-      if (pts) { store.set('hys_pointages', pts); store.invalidate('hys_pointages'); }
+      if (pts && JSON.stringify(pts) !== JSON.stringify(store.pointages())) {
+        _storeSetOrig('hys_pointages', pts); store.invalidate('hys_pointages'); changed = true;
+      }
       const abs = await supa.select('hys_absences', 'statut=eq.en_attente');
       if (abs) {
         const allAbs = store.absences();
+        const before = JSON.stringify(allAbs);
         abs.forEach(a => { const i = allAbs.findIndex(x=>x.id===a.id); if(i>=0)allAbs[i]=a; else allAbs.push(a); });
-        store.set('hys_absences', allAbs);
+        if (JSON.stringify(allAbs) !== before) { _storeSetOrig('hys_absences', allAbs); store.invalidate('hys_absences'); changed = true; }
       }
-      // Refresh la page actuelle si données changées
-      try { navigateTo(currentPage); } catch(e) {}
+      // Ne re-rend la page que si les données ont réellement changé (évite le scintillement toutes les 30 s)
+      if (changed) { try { navigateTo(currentPage); } catch(e) {} }
     }
     // Notifications
     const notifs = await supa.select('hys_notifications', `userId=eq.${currentUser?.id}&lu=eq.false&limit=20`);
