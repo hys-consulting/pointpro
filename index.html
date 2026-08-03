@@ -1075,14 +1075,22 @@ async function doLogin() {
   const users = store.users();
   const user = users.find(u => u.username === username && u.statut === 'actif');
   if (!user) { recordLoginAttempt(username,false); updateAttemptBar(username); showLoginAlert('Identifiant ou mot de passe incorrect.','error'); return; }
-  const valid = await verifyPassword(password, user.password);
+  // La connexion s'appuie d'abord sur l'authentification Supabase (source de vérité du
+  // mot de passe réellement choisi). Repli sur l'empreinte locale si l'Auth ne répond pas
+  // (hors ligne) ou si le compte Auth n'existe pas encore.
+  let _authOk = false;
+  try { _authOk = await supaAuthSignIn(username, password); } catch (e) { _authOk = false; }
+  const valid = _authOk || await verifyPassword(password, user.password);
   if (!valid) {
     recordLoginAttempt(username,false); updateAttemptBar(username);
     const att = getLoginAttempts(username); const rem = MAX_LOGIN_ATTEMPTS - att.count;
     showLoginAlert(`Mot de passe incorrect. ${rem} tentative${rem>1?'s':''} restante${rem>1?'s':''}.`,'error'); return;
   }
   recordLoginAttempt(username, true);
-  supaAuthProvision(username, password).catch(() => {});
+  // Empreinte locale correcte mais pas de session Auth (compte absent ou désynchronisé) :
+  // on provisionne, awaité, pour disposer de la session AVANT toute écriture (ex. changement
+  // de mot de passe) — c'est ce qui empêche le bug de non-enregistrement sous RLS.
+  if (!_authOk) { try { await supaAuthProvision(username, password); } catch (e) {} }
   store.set(SK.SESSION, { userId: user.id, loginAt: Date.now() });
   currentUser = store.users().find(u => u.id === user.id);
   store.addAudit({ action:'LOGIN', userId:user.id, detail:`Connexion : ${user.prenom} ${user.nom} (${ROLE_LABELS[user.role]})` });
@@ -7064,6 +7072,15 @@ function _clearAuthSession() {
 }
 
 // Connexion Auth ; crée le compte s'il n'existe pas encore. Ne lève JAMAIS.
+async function supaAuthSignIn(username, password) {
+  try {
+    const cfg = getSupaConfig(); if (!cfg || !cfg.url) return false;
+    const res = await _authFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: JSON.stringify({ email: authEmail(username), password }) });
+    if (res.ok) { _setAuthSession(await res.json()); return true; }
+    return false;
+  } catch (e) { return false; }
+}
+
 async function supaAuthProvision(username, password) {
   try {
     if (!getSupaConfig() || !getSupaConfig().url) return false;
