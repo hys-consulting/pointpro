@@ -1545,7 +1545,9 @@ function citationDuJour(poste, role) {
       "Ce que nous accomplissons ensemble nous dépasse tous.",
     ],
   };
-  const arr = banque[cat] || banque.general;
+  let arr = banque[cat] || banque.general;
+  const perso = store.settings().citationsPerso || [];
+  if (perso.length) arr = arr.concat(perso);
   const start = new Date(new Date().getFullYear(), 0, 0);
   const jour = Math.floor((new Date() - start) / 86400000);
   return arr[jour % arr.length];
@@ -1589,9 +1591,9 @@ function renderPagePointage() {
           <span>⏳ Cette semaine : <strong>${formatDuree(heuresSemaine)}</strong></span>
           ${isIn?'<span>🟢 En poste</span>':''}
         </div>
-        ${mesAffPointage.length ? `<div style="margin-top:10px;font-size:12.5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span>🗓️ Vos sessions du jour : ${mesAffPointage.map(a=>`${DEMIJOURNEES[a.session]?.icon||''} ${DEMIJOURNEES[a.session]?.label} · ${a.promotion}`).join('  ·  ')}</span>
-          <button onclick="navigateTo('emargement')" style="background:#fff;color:#0f766e;border:none;border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">✍️ Émarger ma session</button>
+        ${mesAffPointage.length ? `<div style="margin-top:10px;font-size:12.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>🗓️ Vos sessions du jour :</span>
+          ${mesAffPointage.map(a=>`<button onclick="goEmarger('${a.session}','${a.promotion}')" style="background:#fff;color:#0f766e;border:none;border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">✍️ ${DEMIJOURNEES[a.session]?.icon||''} ${DEMIJOURNEES[a.session]?.label} · ${a.promotion}</button>`).join('')}
         </div>` : ''}
       </div>
       ${semCfa
@@ -1714,18 +1716,24 @@ function renderPageMonHistorique() {
 }
 
 // ─── PAGE: ÉMARGEMENT FORMATEUR ───────────────────────────────────────────────
+// Cible d'émargement direct (posée par un bouton « Émarger » d'une session).
+let _emargTarget = null;
+function goEmarger(session, promotion) { _emargTarget = { session, promotion }; navigateTo('emargement'); }
+
 function renderPageEmargement(session='matin', promotionFilter='') {
   const today = dateStr(new Date());
   const settings = store.settings();
   const promotions = settings.promotions || [];
   const mesAff = getAffectationsFormateur(currentUser.id, today);
-  // Pré-remplissage : au premier affichage (aucune promotion choisie), on ouvre
-  // directement sur la session à laquelle la personne est affectée aujourd'hui.
-  if (!promotionFilter && mesAff.length) {
-    session = mesAff[0].session;
-    promotionFilter = mesAff[0].promotion;
+  // Cible directe depuis un bouton « Émarger » (prioritaire), sinon
+  // pré-remplissage sur la session affectée du jour au premier affichage.
+  if (_emargTarget) {
+    session = _emargTarget.session; promotionFilter = _emargTarget.promotion; _emargTarget = null;
+  } else if (!promotionFilter && mesAff.length) {
+    session = mesAff[0].session; promotionFilter = mesAff[0].promotion;
   }
   const promotion = promotionFilter || promotions[0] || '';
+  const affUser = (() => { const id = getAffectation(today, session, promotion); return id ? store.users().find(u=>u.id===id) : null; })();
   const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && (!promotion || s.promotion === promotion));
 
   // Chercher émargement existant
@@ -1763,7 +1771,10 @@ function renderPageEmargement(session='matin', promotionFilter='') {
       ${existing && existing.signatureFormateur ? `<div class="alert alert-success">✅ Cet émargement est déjà signé.</div>` : ''}
       <div class="card">
         <div class="card-header">
-          <div class="card-title">Liste de présence — ${DEMIJOURNEES[session]?.label||session} ${promotion ? '· '+promotion : ''}</div>
+          <div>
+            <div class="card-title">Liste de présence — ${DEMIJOURNEES[session]?.label||session} ${promotion ? '· '+promotion : ''}</div>
+            ${affUser ? `<div class="text-xs text-muted" style="margin-top:2px">🗓️ Session affectée à ${esc(affUser.prenom)} ${esc(affUser.nom)}</div>` : ''}
+          </div>
         </div>
         ${stagiaires.length === 0 ? `<div class="empty-state"><div class="icon">🎓</div><p>Aucun stagiaire ${promotion ? 'pour la promotion ' + promotion : '— sélectionnez une promotion'}</p></div>` :
         `<div id="emarg-list" class="emargement-list">
@@ -3089,6 +3100,13 @@ function renderPageParametres() {
           </div>
         </div>
         <div class="settings-section">
+          <h3>Citations du jour</h3>
+          <p class="text-xs text-muted" style="margin-bottom:10px">Citations personnalisées ajoutées au tirage quotidien (une par ligne). Elles s'affichent pour tous, en plus de celles adaptées au poste.</p>
+          <div class="form-group">
+            <textarea id="set-citations" class="form-control" rows="4" placeholder="Ensemble, on va plus loin.&#10;Bravo à toute l'équipe pour cette semaine !" style="resize:vertical">${(s.citationsPerso||[]).join('\n')}</textarea>
+          </div>
+        </div>
+        <div class="settings-section">
           <h3>Mon mot de passe</h3>
           <div class="form-group"><label>Nouveau mot de passe</label>
             <input id="set-pwd" type="password" class="form-control" placeholder="Laisser vide si inchangé" style="max-width:260px">
@@ -3109,6 +3127,7 @@ function renderPageParametres() {
     s.heureFin = document.getElementById('set-hfin')?.value||s.heureFin;
     const promosRaw = document.getElementById('set-promos')?.value||'';
     s.promotions = promosRaw.split(',').map(p=>p.trim()).filter(Boolean);
+    s.citationsPerso = (document.getElementById('set-citations')?.value||'').split('\n').map(x=>x.trim()).filter(Boolean);
     store.saveSettings(s);
     const p1 = document.getElementById('set-pwd')?.value||'', p2 = document.getElementById('set-pwd2')?.value||'';
     const msg = document.getElementById('set-msg');
@@ -5439,9 +5458,9 @@ function renderPageDashboardDG() {
 
       <div style="background:linear-gradient(120deg,#2ebd6b,#0ea5e9);color:#fff;border-radius:14px;padding:14px 18px;margin-bottom:16px;box-shadow:0 6px 18px rgba(46,189,107,.22)">
         <div style="font-style:italic;font-size:14px;line-height:1.35">« ${citaAdmin} »</div>
-        ${affAdmin.length ? `<div style="margin-top:8px;font-size:12.5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span>🗓️ Vos sessions aujourd'hui : ${affAdmin.map(a=>`${DEMIJOURNEES[a.session]?.icon||''} ${DEMIJOURNEES[a.session]?.label} · ${a.promotion}`).join('  ·  ')}</span>
-          <button onclick="navigateTo('emargement')" style="background:#fff;color:#0f766e;border:none;border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">✍️ Émarger</button>
+        ${affAdmin.length ? `<div style="margin-top:8px;font-size:12.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>🗓️ Vos sessions aujourd'hui :</span>
+          ${affAdmin.map(a=>`<button onclick="goEmarger('${a.session}','${a.promotion}')" style="background:#fff;color:#0f766e;border:none;border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">✍️ ${DEMIJOURNEES[a.session]?.icon||''} ${DEMIJOURNEES[a.session]?.label} · ${a.promotion}</button>`).join('')}
         </div>` : ''}
       </div>
 
