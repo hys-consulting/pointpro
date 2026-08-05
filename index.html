@@ -732,6 +732,31 @@ const DEMIJOURNEES = {
   apresmidi:{ label:'Après-midi',icon:'🌇', heureDebut:'13:00', heureFin:'16:00' },
 };
 
+// ─── AFFECTATIONS FORMATEURS (par date × demi-journée × promotion) ────────────
+// Stockées dans settings.affectations → synchronisées automatiquement (le store
+// pousse toute modification de settings vers Supabase). Clé compacte, les
+// affectations vides ne sont pas conservées.
+function affKey(date, session, promotion) { return `${date}|${session}|${promotion}`; }
+function getAffectations() { return store.settings().affectations || {}; }
+function getAffectation(date, session, promotion) { return getAffectations()[affKey(date, session, promotion)] || ''; }
+function setAffectation(date, session, promotion, formateurId) {
+  const s = store.settings();
+  s.affectations = s.affectations || {};
+  const k = affKey(date, session, promotion);
+  if (formateurId) s.affectations[k] = formateurId; else delete s.affectations[k];
+  store.saveSettings(s);
+}
+// Affectations d'un formateur pour une date donnée : [{session, promotion}, ...]
+function getAffectationsFormateur(formateurId, date) {
+  const aff = getAffectations(); const out = [];
+  Object.entries(aff).forEach(([k, fid]) => {
+    if (fid !== formateurId) return;
+    const [d, session, promotion] = k.split('|');
+    if (d === date) out.push({ session, promotion });
+  });
+  return out.sort((a, b) => (a.session > b.session ? 1 : -1));
+}
+
 // ─── ÉTAT GLOBAL ────────────────────────────────────────────────────────────
 let currentUser = null;
 let currentPage = null;
@@ -892,6 +917,39 @@ function downloadCSV(rows, filename) {
   const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+// ─── MOTEUR EXCEL (SheetJS via CDN, chargé à la demande comme jsPDF) ──────────
+let _xlsxLoading = false;
+function loadXLSX() {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    if (_xlsxLoading) { const w = setInterval(() => { if (window.XLSX) { clearInterval(w); resolve(window.XLSX); } }, 100); return; }
+    _xlsxLoading = true;
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload  = () => resolve(window.XLSX);
+    s.onerror = () => reject(new Error('SheetJS non chargé'));
+    document.head.appendChild(s);
+  });
+}
+// sheets = [{ name, rows:[[...],...], cols?:[largeur,...] }]
+async function downloadXLSX(sheets, filename) {
+  try {
+    const XLSX = await loadXLSX();
+    const wb = XLSX.utils.book_new();
+    sheets.forEach(sh => {
+      const ws = XLSX.utils.aoa_to_sheet(sh.rows);
+      if (sh.cols) ws['!cols'] = sh.cols.map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, (sh.name || 'Feuille').slice(0, 31));
+    });
+    XLSX.writeFile(wb, filename);
+    return true;
+  } catch (e) {
+    console.error('[HYS PointPro] Export Excel:', e);
+    toast('Export Excel indisponible (connexion Internet requise).', 'error');
+    return false;
+  }
 }
 
 // ─── SÉCURITÉ ─────────────────────────────────────────────────────────────────
@@ -1065,6 +1123,32 @@ function openModal(title, bodyHtml, buttons, large=false) {
 }
 function closeModal() { document.getElementById('modal-overlay')?.classList.remove('open'); }
 
+// ─── PETITE CÉLÉBRATION (confettis légers, pur DOM) ──────────────────────────
+function celebrate(msg) {
+  if (msg) toast(msg, 'success');
+  try {
+    const colors = ['#2ebd6b','#0ea5e9','#f59e0b','#ef4444','#a855f7','#14b8a6'];
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9999;overflow:hidden';
+    document.body.appendChild(wrap);
+    for (let i = 0; i < 80; i++) {
+      const c = document.createElement('div');
+      const size = 6 + Math.random() * 8;
+      c.style.cssText = `position:absolute;top:-20px;left:${Math.random()*100}%;width:${size}px;height:${size*0.6}px;`
+        + `background:${colors[i%colors.length]};opacity:.9;border-radius:2px;`
+        + `transform:rotate(${Math.random()*360}deg);`
+        + `animation:hys-confetti ${1.6+Math.random()*1.4}s cubic-bezier(.25,.6,.4,1) ${Math.random()*0.3}s forwards`;
+      wrap.appendChild(c);
+    }
+    if (!document.getElementById('hys-confetti-style')) {
+      const st = document.createElement('style'); st.id = 'hys-confetti-style';
+      st.textContent = '@keyframes hys-confetti{to{top:105%;transform:rotate(720deg) translateX(40px);opacity:0}}';
+      document.head.appendChild(st);
+    }
+    setTimeout(() => wrap.remove(), 3200);
+  } catch {}
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 async function doLogin() {
   const username = (document.getElementById('login-username')?.value||'').trim();
@@ -1179,7 +1263,9 @@ function getNavPages() {
     { id:'dashboard',       label:'Tableau de bord',   icon:'📊' },
     { section:'FORMATION' },
     { id:'emargements-admin',label:'Émargements',       icon:'📋' },
+    { id:'affectation-formateurs',label:'Affectation formateurs', icon:'🗓️' },
     { id:'emargement',      label:'Prendre présence',     icon:'✍️' },
+    { id:'presences-stats', label:'Présences & assiduité',icon:'📊' },
     { id:'stagiaires',      label:'Stagiaires',         icon:'🎓' },
     { id:'objectifs',       label:'Objectifs',            icon:'🎯' },
     { id:'modules',         label:'Modules formation',    icon:'📚' },
@@ -1226,6 +1312,8 @@ function navigateTo(pageId) {
       case 'mon-historique':    renderPageMonHistorique(); break;
       case 'emargement':        renderPageEmargement(); break;
       case 'emargements-admin': renderPageEmargementsAdmin(); break;
+      case 'affectation-formateurs': renderPageAffectationFormateurs(); break;
+      case 'presences-stats':   renderPagePresencesStats(); break;
       case 'stagiaires':        renderPageStagiaires(); break;
       case 'objectifs':         renderPageObjectifs(); break;
       case 'messagerie':        renderPageMessagerie(); break;
@@ -1506,6 +1594,7 @@ function renderPageEmargement(session='matin', promotionFilter='') {
   const today = dateStr(new Date());
   const settings = store.settings();
   const promotions = settings.promotions || [];
+  const mesAff = isFormateur() ? getAffectationsFormateur(currentUser.id, today) : [];
   const promotion = promotionFilter || promotions[0] || '';
   const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && (!promotion || s.promotion === promotion));
 
@@ -1523,6 +1612,10 @@ function renderPageEmargement(session='matin', promotionFilter='') {
       </div>
     </div>
     <div class="page-body">
+      ${mesAff.length ? `<div class="alert alert-info" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <strong>🗓️ Vos affectations aujourd'hui :</strong>
+        ${mesAff.map(a => `<span class="badge badge-blue">${DEMIJOURNEES[a.session]?.icon||''} ${DEMIJOURNEES[a.session]?.label||a.session} · ${a.promotion}</span>`).join(' ')}
+      </div>` : ''}
       <div class="filters-bar">
         <div class="form-group" style="margin-bottom:0">
           <select class="form-control" id="emarg-session">
@@ -1695,7 +1788,7 @@ function saveEmargement(presences, session, promotion, existingId) {
   store.saveEmargements(emargements);
   store.addAudit({ action:'EMARGEMENT_SIGNE', userId:currentUser.id, detail:`Émargement ${session} ${promotion} signé — ${today}` });
   closeModal();
-  toast('Émargement signé et enregistré.','success');
+  celebrate('Émargement signé et enregistré. Bravo ! 🎉');
   renderPageEmargement(session, promotion);
 }
 
@@ -1712,7 +1805,11 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header-left"><h2>📋 Émargements</h2><p>Suivi des feuilles de présence</p></div>
-      <button class="btn btn-ghost btn-sm" id="emarg-export">📥 Export CSV</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-success btn-sm" id="emarg-create">➕ Créer / corriger</button>
+        <button class="btn btn-primary btn-sm" id="emarg-xlsx">📊 Excel</button>
+        <button class="btn btn-ghost btn-sm" id="emarg-export">📥 CSV</button>
+      </div>
     </div>
     <div class="page-body">
       <div class="filters-bar">
@@ -1756,7 +1853,8 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
             <img src="${e.signatureFormateur}" style="border:1px solid var(--border2);border-radius:6px;max-width:260px;background:#fff">
           </div>` : ''}
           <div style="margin-top:12px;display:flex;gap:8px">
-            <div style="display:flex;gap:6px">
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-amber btn-sm emarg-edit-btn" data-id="${e.id}">✏️ Modifier</button>
             <button class="btn btn-ghost btn-sm emarg-print-btn" data-id="${e.id}">🖨 Imprimer</button>
             <button class="btn btn-primary btn-sm emarg-pdf-btn" data-id="${e.id}">📄 PDF</button>
           </div>
@@ -1769,6 +1867,11 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
     renderPageEmargementsAdmin(document.getElementById('ea-date')?.value||'', document.getElementById('ea-promo')?.value||'');
   });
   document.getElementById('emarg-export')?.addEventListener('click', () => exportEmargementsCSV(date));
+  document.getElementById('emarg-xlsx')?.addEventListener('click', () => exportEmargementsXLSX(date, filterPromo));
+  document.getElementById('emarg-create')?.addEventListener('click', () => openCreateEmargementModal(date));
+  document.querySelectorAll('.emarg-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditEmargementModal(btn.getAttribute('data-id')));
+  });
   document.querySelectorAll('.emarg-print-btn').forEach(btn => {
     btn.addEventListener('click', () => printEmargement(btn.getAttribute('data-id')));
   });
@@ -1789,6 +1892,282 @@ function exportEmargementsCSV(date) {
   });
   downloadCSV(rows, `emargements_${date}.csv`);
   toast('Export CSV émargements.','success');
+}
+
+async function exportEmargementsXLSX(date, filterPromo='') {
+  let emargs = store.emargements().filter(e => e.date === date);
+  if (filterPromo) emargs = emargs.filter(e => e.promotion === filterPromo);
+  const rows = [[`Émargements du ${date}`], [], ['Session','Promotion','Formateur','Stagiaire','Présence','Signé']];
+  emargs.forEach(e => {
+    const f = store.users().find(u => u.id === e.formateurId);
+    const stags = store.stagiaires().filter(s => s.promotion === e.promotion);
+    stags.forEach(s => rows.push([DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'',
+      f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']));
+  });
+  if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,8] }], `emargements_${date}.xlsx`))
+    toast('Export Excel émargements.','success');
+}
+
+// ─── CORRECTION ADMIN D'UN ÉMARGEMENT ────────────────────────────────────────
+function openEditEmargementModal(emargId) {
+  const e = store.emargements().find(x => x.id === emargId);
+  if (!e) { toast('Émargement introuvable.','error'); return; }
+  const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === e.promotion);
+  const presences = { ...(e.presences || {}) };
+  const body = `
+    <p class="text-xs text-muted" style="margin-bottom:10px">
+      ${DEMIJOURNEES[e.session]?.icon||''} ${DEMIJOURNEES[e.session]?.label||e.session} · ${e.promotion} · ${e.date}
+      ${e.signatureFormateur ? ' · <span class="badge badge-green">Signé</span>' : ''}
+    </p>
+    <div class="text-xs text-muted" style="margin-bottom:10px">Correction administrateur — ajustez les présences puis enregistrez. La modification est tracée dans le journal d'audit.</div>
+    <div class="emargement-list">
+      ${stagiaires.map(s => `<div class="emargement-row">
+        <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
+        <button class="btn ${presences[s.id]?'btn-success':'btn-ghost'} btn-sm edit-emarg-toggle" data-id="${s.id}">${presences[s.id]?'✅ Présent':'○ Absent'}</button>
+      </div>`).join('')}
+    </div>`;
+  openModal('✏️ Modifier l\'émargement', body, [
+    { label:'Annuler', cls:'btn-ghost', action: closeModal },
+    { label:'💾 Enregistrer', cls:'btn-primary', action: () => saveEmargementAdmin(emargId, presences) },
+  ], true);
+  document.querySelectorAll('.edit-emarg-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      presences[id] = !presences[id];
+      btn.className = `btn ${presences[id]?'btn-success':'btn-ghost'} btn-sm edit-emarg-toggle`;
+      btn.textContent = presences[id] ? '✅ Présent' : '○ Absent';
+    });
+  });
+}
+function saveEmargementAdmin(emargId, presences) {
+  const emargements = store.emargements();
+  const i = emargements.findIndex(x => x.id === emargId);
+  if (i < 0) return;
+  emargements[i].presences = presences;
+  emargements[i].modifiedByAdmin = true;
+  emargements[i].modifiedAt = now();
+  emargements[i].modifiedBy = currentUser.id;
+  const e = emargements[i];
+  store.saveEmargements(emargements);
+  store.addAudit({ action:'EMARGEMENT_MODIFIE_ADMIN', userId:currentUser.id, detail:`Correction admin émargement ${e.session} ${e.promotion} — ${e.date}` });
+  closeModal();
+  toast('Émargement corrigé.','success');
+  renderPageEmargementsAdmin(e.date, '');
+}
+
+// ─── CRÉATION ADMIN D'UN ÉMARGEMENT (formateur absent / oubli) ────────────────
+function openCreateEmargementModal(date, presetSession='matin', presetPromo='') {
+  const promotions = store.settings().promotions || [];
+  const body = `
+    <div class="form-group"><label>Date</label><input type="date" id="ce-date" class="form-control" value="${date}"></div>
+    <div class="form-group"><label>Demi-journée</label><select id="ce-session" class="form-control">
+      ${Object.entries(DEMIJOURNEES).map(([k,v])=>`<option value="${k}" ${presetSession===k?'selected':''}>${v.icon} ${v.label}</option>`).join('')}
+    </select></div>
+    <div class="form-group"><label>Promotion</label><select id="ce-promo" class="form-control">
+      <option value="">-- choisir --</option>
+      ${promotions.map(p=>`<option value="${p}" ${presetPromo===p?'selected':''}>${p}</option>`).join('')}
+    </select></div>
+    <div class="text-xs text-muted">Feuille créée sans signature (correction administrative).</div>`;
+  openModal('➕ Créer / corriger un émargement', body, [
+    { label:'Annuler', cls:'btn-ghost', action: closeModal },
+    { label:'Continuer →', cls:'btn-primary', action: () => {
+        const d = document.getElementById('ce-date').value || date;
+        const session = document.getElementById('ce-session').value;
+        const promo = document.getElementById('ce-promo').value;
+        if (!promo) { toast('Choisissez une promotion.','warning'); return; }
+        const existing = store.emargements().find(x => x.date===d && x.session===session && x.promotion===promo);
+        if (existing) { toast('Un émargement existe déjà — ouverture en correction.','info'); openEditEmargementModal(existing.id); return; }
+        openPresenceEditorForNew(d, session, promo);
+    } },
+  ]);
+}
+function openPresenceEditorForNew(date, session, promotion) {
+  const stagiaires = store.stagiaires().filter(s => s.statut==='actif' && s.promotion===promotion);
+  const presences = {};
+  const body = `
+    <p class="text-xs text-muted" style="margin-bottom:10px">${DEMIJOURNEES[session]?.icon||''} ${DEMIJOURNEES[session]?.label} · ${promotion} · ${date}</p>
+    ${stagiaires.length===0 ? '<div class="empty-state"><div class="icon">🎓</div><p>Aucun stagiaire dans cette promotion.</p></div>' :
+    `<div class="emargement-list">
+      ${stagiaires.map(s=>`<div class="emargement-row">
+        <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
+        <button class="btn btn-ghost btn-sm newe-toggle" data-id="${s.id}">○ Absent</button>
+      </div>`).join('')}
+    </div>`}`;
+  openModal('➕ Nouvelle feuille de présence', body, [
+    { label:'← Retour', cls:'btn-ghost', action: () => openCreateEmargementModal(date, session, promotion) },
+    { label:'💾 Créer', cls:'btn-primary', action: () => {
+        const emargements = store.emargements();
+        emargements.push({ id: uid(), formateurId: getAffectation(date, session, promotion) || currentUser.id,
+          date, session, promotion, presences, createdByAdmin:true, createdAt: now() });
+        store.saveEmargements(emargements);
+        store.addAudit({ action:'EMARGEMENT_CREE_ADMIN', userId:currentUser.id, detail:`Création admin émargement ${session} ${promotion} — ${date}` });
+        closeModal(); toast('Feuille de présence créée.','success'); renderPageEmargementsAdmin(date,'');
+    } },
+  ], true);
+  document.querySelectorAll('.newe-toggle').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ const id=btn.getAttribute('data-id'); presences[id]=!presences[id];
+      btn.className=`btn ${presences[id]?'btn-success':'btn-ghost'} btn-sm newe-toggle`; btn.textContent=presences[id]?'✅ Présent':'○ Absent'; });
+  });
+}
+
+// ─── PAGE: AFFECTATION FORMATEURS ─────────────────────────────────────────────
+function renderPageAffectationFormateurs(dateArg='') {
+  const date = dateArg || dateStr(new Date());
+  const promotions = store.settings().promotions || [];
+  const formateurs = store.users().filter(u => u.role === ROLES.FORMATEUR && u.statut === 'actif');
+  const sessions = Object.entries(DEMIJOURNEES);
+  let dLong = ''; try { dLong = new Date(date+'T00:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'}); } catch {}
+  const shift = n => { const d = new Date(date+'T00:00'); d.setDate(d.getDate()+n); return dateStr(d); };
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🗓️ Affectation formateurs</h2><p>Qui anime quelle promotion, par demi-journée</p></div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar" style="align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="af-prev">← Jour précédent</button>
+        <input type="date" class="form-control" id="af-date" value="${date}" style="max-width:170px">
+        <button class="btn btn-ghost btn-sm" id="af-next">Jour suivant →</button>
+        <span class="text-xs text-muted" style="text-transform:capitalize">${dLong}</span>
+      </div>
+      ${formateurs.length === 0 ? '<div class="card"><div class="empty-state"><div class="icon">🎓</div><p>Aucun formateur externe actif. Ajoutez-en dans Utilisateurs.</p></div></div>' :
+      `<div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Promotion</th>${sessions.map(([k,v])=>`<th>${v.icon} ${v.label}</th>`).join('')}</tr></thead>
+        <tbody>${promotions.map(p => `<tr>
+          <td class="td-bold">${promoBadge(p)}</td>
+          ${sessions.map(([k]) => {
+            const cur = getAffectation(date, k, p);
+            const emarg = store.emargements().find(e => e.date===date && e.session===k && e.promotion===p);
+            return `<td>
+              <select class="form-control af-select" data-session="${k}" data-promo="${p}" style="min-width:150px">
+                <option value="">— non affecté —</option>
+                ${formateurs.map(f => `<option value="${f.id}" ${cur===f.id?'selected':''}>${esc(f.prenom)} ${esc(f.nom)}</option>`).join('')}
+              </select>
+              ${emarg ? `<div class="text-xs" style="margin-top:4px">${emarg.signatureFormateur?'<span class="badge badge-green">✅ signé</span>':'<span class="badge badge-amber">à signer</span>'}</div>` : ''}
+            </td>`;
+          }).join('')}
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="text-xs text-muted" style="padding:10px 14px">💡 Enregistrement automatique. Le formateur affecté retrouve ses créneaux du jour en haut de sa page d'émargement.</div>
+      </div>`}
+    </div>`;
+  const reload = d => renderPageAffectationFormateurs(d);
+  document.getElementById('af-date')?.addEventListener('change', e => reload(e.target.value));
+  document.getElementById('af-prev')?.addEventListener('click', () => reload(shift(-1)));
+  document.getElementById('af-next')?.addEventListener('click', () => reload(shift(1)));
+  document.querySelectorAll('.af-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      setAffectation(date, sel.getAttribute('data-session'), sel.getAttribute('data-promo'), sel.value);
+      toast('Affectation enregistrée.','success');
+    });
+  });
+}
+
+// ─── PAGE: PRÉSENCES & ASSIDUITÉ ──────────────────────────────────────────────
+function renderPagePresencesStats(filterPromo='') {
+  const promotions = store.settings().promotions || [];
+  const emargs = store.emargements();
+  const stagiaires = store.stagiaires().filter(s => s.statut === 'actif');
+
+  const promoStats = promotions.map(p => {
+    const es = emargs.filter(e => e.promotion === p);
+    const sts = stagiaires.filter(s => s.promotion === p);
+    let present = 0, slots = 0;
+    es.forEach(e => sts.forEach(s => { slots++; if (e.presences?.[s.id]) present++; }));
+    return { promo:p, sessions:es.length, nbStag:sts.length, taux: slots ? Math.round(present/slots*100) : 0 };
+  });
+  const rows = [];
+  stagiaires.filter(s => !filterPromo || s.promotion === filterPromo).forEach(s => {
+    const es = emargs.filter(e => e.promotion === s.promotion);
+    const total = es.length;
+    const pres = es.filter(e => e.presences?.[s.id]).length;
+    rows.push({ s, total, pres, abs: total - pres, taux: total ? Math.round(pres/total*100) : 0 });
+  });
+  rows.sort((a,b) => b.taux - a.taux);
+
+  const tauxBadge = t => t>=100 ? '<span class="badge badge-green">🏆 100%</span>'
+    : t>=90 ? `<span class="badge badge-green">✅ ${t}%</span>`
+    : t>=75 ? `<span class="badge badge-blue">👍 ${t}%</span>`
+    : t>=50 ? `<span class="badge badge-amber">⚠️ ${t}%</span>`
+    : `<span class="badge badge-red">❗ ${t}%</span>`;
+  const bar = t => `<div style="background:var(--border);border-radius:6px;height:8px;overflow:hidden;min-width:80px">
+    <div style="width:${t}%;height:100%;background:${t>=75?'#2ebd6b':t>=50?'#f59e0b':'#ef4444'}"></div></div>`;
+
+  const globalTaux = promoStats.length ? Math.round(promoStats.reduce((a,b)=>a+b.taux,0)/promoStats.filter(x=>x.sessions>0).length || 0) : 0;
+  const parfaits = rows.filter(r => r.total>0 && r.taux===100).length;
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>📊 Présences & assiduité</h2><p>Taux de présence par promotion et par apprenti</p></div>
+      <button class="btn btn-primary btn-sm" id="ps-xlsx">📊 Excel</button>
+    </div>
+    <div class="page-body">
+      <div class="stats-grid">
+        <div class="stat-card green"><div class="stat-label">Taux de présence moyen</div><div class="stat-value green">${isFinite(globalTaux)?globalTaux:0}%</div></div>
+        <div class="stat-card blue"><div class="stat-label">Feuilles d'émargement</div><div class="stat-value blue">${emargs.length}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Assiduité parfaite 🏆</div><div class="stat-value amber">${parfaits}</div><div class="stat-sub">apprenti(s) à 100%</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Taux de présence par promotion</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Promotion</th><th>Sessions</th><th>Apprentis</th><th>Taux</th><th></th></tr></thead>
+          <tbody>${promoStats.map(p => `<tr>
+            <td class="td-bold">${promoBadge(p.promo)}</td>
+            <td>${p.sessions}</td><td>${p.nbStag}</td>
+            <td>${tauxBadge(p.taux)}</td><td>${bar(p.taux)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Assiduité par apprenti</div>
+          <select class="form-control" id="ps-promo" style="max-width:170px">
+            <option value="">Toutes promotions</option>
+            ${promotions.map(p => `<option value="${p}" ${filterPromo===p?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Apprenti</th><th>Promotion</th><th>Présences</th><th>Absences</th><th>Taux</th></tr></thead>
+          <tbody>${rows.length===0 ? '<tr><td colspan="5" class="text-muted">Aucune donnée</td></tr>' : rows.map(r => `<tr>
+            <td class="td-bold">${esc(r.s.prenom)} ${esc(r.s.nom)}</td>
+            <td>${promoBadge(r.s.promotion)}</td>
+            <td>${r.pres}/${r.total}</td>
+            <td>${r.abs>0?`<span class="badge badge-red">${r.abs}</span>`:'—'}</td>
+            <td>${tauxBadge(r.taux)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+  document.getElementById('ps-promo')?.addEventListener('change', e => renderPagePresencesStats(e.target.value));
+  document.getElementById('ps-xlsx')?.addEventListener('click', () => exportPresencesXLSX(filterPromo));
+}
+
+async function exportPresencesXLSX(filterPromo='') {
+  const promotions = store.settings().promotions || [];
+  const emargs = store.emargements();
+  const stagiaires = store.stagiaires().filter(s => s.statut === 'actif');
+  const s1 = [['Taux de présence par promotion'], [], ['Promotion','Sessions','Apprentis','Taux (%)']];
+  promotions.forEach(p => {
+    const es = emargs.filter(e => e.promotion === p);
+    const sts = stagiaires.filter(s => s.promotion === p);
+    let present=0, slots=0;
+    es.forEach(e => sts.forEach(s => { slots++; if (e.presences?.[s.id]) present++; }));
+    s1.push([p, es.length, sts.length, slots?Math.round(present/slots*100):0]);
+  });
+  const s2 = [['Assiduité par apprenti'], [], ['Apprenti','Promotion','Présences','Total sessions','Absences','Taux (%)']];
+  stagiaires.filter(s => !filterPromo || s.promotion===filterPromo).forEach(s => {
+    const es = emargs.filter(e => e.promotion === s.promotion);
+    const pres = es.filter(e => e.presences?.[s.id]).length;
+    s2.push([`${s.prenom} ${s.nom}`, s.promotion, pres, es.length, es.length-pres, es.length?Math.round(pres/es.length*100):0]);
+  });
+  if (await downloadXLSX([
+    { name:'Par promotion', rows:s1, cols:[14,10,10,10] },
+    { name:'Assiduité', rows:s2, cols:[26,12,10,14,10,10] },
+  ], `presences_assiduite_${dateStr(new Date())}.xlsx`)) toast('Export Excel présences.','success');
 }
 
 function printEmargement(emargId) {
