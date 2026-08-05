@@ -732,6 +732,21 @@ const DEMIJOURNEES = {
   apresmidi:{ label:'Après-midi',icon:'🌇', heureDebut:'13:00', heureFin:'16:00' },
 };
 
+// ─── STATUTS DE PRÉSENCE (émargement : présent / en atelier / absent) ─────────
+const STATUTS_PRESENCE = {
+  present: { label:'Présent',    icon:'✅', cls:'badge-green', btn:'btn-success' },
+  atelier: { label:'En atelier', icon:'🛠️', cls:'badge-blue',  btn:'btn-primary' },
+  absent:  { label:'Absent',     icon:'❌', cls:'badge-red',   btn:'btn-ghost'   },
+};
+// Statut d'un stagiaire dans un émargement (rétro-compatible avec l'ancien
+// format booléen presences[id] : true → présent, false/absent → absent).
+function getStatut(emarg, stagId) {
+  if (emarg && emarg.statuts && emarg.statuts[stagId]) return emarg.statuts[stagId];
+  return emarg?.presences?.[stagId] ? 'present' : 'absent';
+}
+// « Compté présent » = présent OU en atelier (jamais absent).
+function estComptePresent(statut) { return statut === 'present' || statut === 'atelier'; }
+
 // ─── AFFECTATIONS FORMATEURS (par date × demi-journée × promotion) ────────────
 // Stockées dans settings.affectations → synchronisées automatiquement (le store
 // pousse toute modification de settings vers Supabase). Clé compacte, les
@@ -1452,6 +1467,89 @@ function renderRecentEmargements() {
   </div></div>`;
 }
 
+// ─── CITATION DU JOUR (selon le poste, esprit d'équipe) ──────────────────────
+// Citations originales, une par jour (stable dans la journée), adaptées à la
+// fonction du collaborateur. Le fil rouge : progresser, mais ensemble.
+function citationDuJour(poste) {
+  const p = (poste||'').toLowerCase();
+  let cat = 'general';
+  if (/pédago|pedago|formateur|formatrice|formation|enseign/.test(p)) cat = 'pedagogie';
+  else if (/secrét|secret|administr|accueil|assistan|gestion/.test(p)) cat = 'administratif';
+  else if (/logisti|entreprise|maintenance|technique|atelier/.test(p)) cat = 'logistique';
+  else if (/cip|handicap|insertion|accompagn|social|référent|refernt/.test(p)) cat = 'accompagnement';
+  else if (/coordin|pilotage|projet|chef/.test(p)) cat = 'coordination';
+  else if (/direct|\bdg\b|manager|responsable/.test(p)) cat = 'direction';
+  const banque = {
+    pedagogie: [
+      "Chaque apprenant qui progresse, c'est toute l'équipe qui réussit.",
+      "Transmettre aujourd'hui, c'est construire l'avenir de tout le groupe.",
+      "Un bon formateur élève sa promo ; une équipe de formateurs élève une génération.",
+      "Votre exigence d'aujourd'hui deviendra la fierté collective de demain.",
+      "Le savoir partagé se multiplie — partageons-le en équipe.",
+      "Derrière chaque réussite d'apprenti, il y a une équipe pédagogique unie.",
+      "Former ensemble, réussir ensemble.",
+    ],
+    administratif: [
+      "Un dossier bien tenu, c'est toute l'équipe qui avance sereinement.",
+      "L'accueil que vous offrez donne le ton à tout le groupe.",
+      "La rigueur d'un(e) seul(e) fait la fiabilité de tous.",
+      "Chaque détail réglé aujourd'hui libère l'équipe pour demain.",
+      "Votre organisation est la colonne vertébrale du collectif.",
+      "Bien gérer, c'est prendre soin de toute l'équipe.",
+      "L'ordre que vous mettez profite à chacun d'entre nous.",
+    ],
+    logistique: [
+      "Une logistique fluide, c'est toute l'équipe qui gagne du temps.",
+      "Anticiper aujourd'hui, c'est faciliter le travail de tous demain.",
+      "Chaque lien tissé avec l'entreprise renforce le collectif.",
+      "Sur le terrain, votre régularité porte toute l'équipe.",
+      "Bien préparer, c'est donner à chacun les moyens de réussir.",
+      "Le bon outil, au bon endroit, au bon moment : merci à vous, pour nous tous.",
+      "Votre fiabilité est le socle sur lequel l'équipe s'appuie.",
+    ],
+    accompagnement: [
+      "Accompagner une personne, c'est faire grandir tout le collectif.",
+      "Chaque parcours sécurisé est une victoire d'équipe.",
+      "Votre écoute d'aujourd'hui change des trajectoires, ensemble.",
+      "Personne laissé de côté : c'est notre force commune.",
+      "Prendre soin de l'autre, c'est renforcer toute l'équipe.",
+      "L'inclusion est un sport collectif — merci d'en être le moteur.",
+      "Un accompagnement réussi, c'est l'équipe entière qui rayonne.",
+    ],
+    coordination: [
+      "Coordonner, c'est transformer des efforts individuels en réussite collective.",
+      "Une vision claire aujourd'hui aligne toute l'équipe demain.",
+      "Vous reliez les talents : ensemble, on va plus loin.",
+      "Piloter avec justesse, c'est donner de l'élan à chacun.",
+      "Chaque tâche orchestrée rapproche l'équipe de son objectif.",
+      "Le collectif avance au rythme de sa coordination — merci d'y veiller.",
+      "Fédérer, c'est déjà réussir à moitié.",
+    ],
+    direction: [
+      "Un cap clair inspire toute l'équipe à se dépasser.",
+      "Diriger, c'est faire grandir chacun pour élever le groupe.",
+      "Votre confiance libère l'énergie de toute l'équipe.",
+      "Les grandes réussites sont toujours collectives — merci de les rendre possibles.",
+      "Donner l'exemple aujourd'hui, c'est entraîner tout le monde demain.",
+      "Une équipe soudée derrière une vision : voilà votre plus belle réussite.",
+      "Servir l'équipe, c'est la plus noble façon de la mener.",
+    ],
+    general: [
+      "Seul on va plus vite, ensemble on va plus loin.",
+      "Chaque effort compte, et chaque effort porte l'équipe.",
+      "Votre engagement d'aujourd'hui inspire tout le collectif.",
+      "La réussite est un travail d'équipe — merci d'en faire partie.",
+      "Un pas de plus pour vous, un bond en avant pour l'équipe.",
+      "L'excellence est une habitude qui se cultive ensemble.",
+      "Ce que nous accomplissons ensemble nous dépasse tous.",
+    ],
+  };
+  const arr = banque[cat] || banque.general;
+  const start = new Date(new Date().getFullYear(), 0, 0);
+  const jour = Math.floor((new Date() - start) / 86400000);
+  return arr[jour % arr.length];
+}
+
 // ─── PAGE: POINTAGE FORMATEUR ─────────────────────────────────────────────────
 function renderPagePointage() {
   const today = dateStr(new Date());
@@ -1461,15 +1559,35 @@ function renderPagePointage() {
   const heures = calcHeuresJour(pts);
   const semCfa = getSemaineCFAActive(today);
 
+  // Accueil personnalisé selon l'heure + heures de la semaine en cours
+  const hNow = new Date().getHours();
+  const salut = hNow < 12 ? 'Bonjour' : hNow < 18 ? 'Bon après-midi' : 'Bonsoir';
+  const emoji = hNow < 12 ? '🌅' : hNow < 18 ? '☀️' : '🌇';
+  const lundi = new Date(); const dow = (lundi.getDay()+6)%7; lundi.setDate(lundi.getDate()-dow);
+  let heuresSemaine = 0;
+  for (let i=0;i<=dow;i++){ const d=new Date(lundi); d.setDate(lundi.getDate()+i); heuresSemaine += calcHeuresJour(getPointagesUserDay(currentUser.id, dateStr(d))); }
+  const messages = ['Belle journée à vous ! 💪','Content de vous revoir 👋','Prêt(e) pour une belle journée ?','Votre régularité fait la différence ✨','Un jour de plus vers vos objectifs 🎯','On avance, ensemble 🤝'];
+  const msgJour = messages[new Date().getDate() % messages.length];
+  const citaJour = citationDuJour(currentUser.service);
+
   const main = document.getElementById('main-content');
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
         <h2>⏱️ Mon Pointage</h2>
-        <p>Bonjour ${esc(currentUser.prenom)} — ${today}</p>
+        <p>${today}</p>
       </div>
     </div>
     <div class="page-body">
+      <div style="background:linear-gradient(120deg,#2ebd6b,#0ea5e9);color:#fff;border-radius:16px;padding:18px 20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(46,189,107,.28)">
+        <div style="font-size:20px;font-weight:800">${emoji} ${salut}, ${esc(currentUser.prenom)} !</div>
+        <div style="margin-top:8px;padding-left:12px;border-left:3px solid rgba(255,255,255,.6);font-style:italic;font-size:14px;line-height:1.35">« ${citaJour} »</div>
+        <div style="margin-top:12px;display:flex;gap:18px;flex-wrap:wrap;font-size:13px">
+          <span style="text-transform:capitalize">📅 ${new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})}</span>
+          <span>⏳ Cette semaine : <strong>${formatDuree(heuresSemaine)}</strong></span>
+          ${isIn?'<span>🟢 En poste</span>':''}
+        </div>
+      </div>
       ${semCfa
         ? `<div class="alert alert-success">🎓 Semaine CFA active — Promotion <strong>${semCfa.promotion}</strong></div>`
         : `<div class="alert alert-warning">⚠️ Vous êtes en <strong>semaine entreprise</strong>. Le pointage CFA n'est pas attendu.</div>`}
@@ -1638,12 +1756,12 @@ function renderPageEmargement(session='matin', promotionFilter='') {
         ${stagiaires.length === 0 ? `<div class="empty-state"><div class="icon">🎓</div><p>Aucun stagiaire ${promotion ? 'pour la promotion ' + promotion : '— sélectionnez une promotion'}</p></div>` :
         `<div id="emarg-list" class="emargement-list">
           ${stagiaires.map(s => {
-            const present = existing?.presences?.[s.id] || false;
+            const st = getStatut(existing, s.id);
             return `<div class="emargement-row" id="row-${s.id}">
               <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
-              <button class="btn ${present?'btn-success':'btn-ghost'} btn-sm emarg-toggle" data-id="${s.id}" ${existing?.signatureFormateur?'disabled':''}>
-                ${present ? '✅ Présent' : '○ Absent'}
-              </button>
+              <select class="form-control emarg-statut" data-id="${s.id}" style="max-width:170px" ${existing?.signatureFormateur?'disabled':''}>
+                ${Object.entries(STATUTS_PRESENCE).map(([k,v])=>`<option value="${k}" ${st===k?'selected':''}>${v.icon} ${v.label}</option>`).join('')}
+              </select>
             </div>`;
           }).join('')}
         </div>
@@ -1658,33 +1776,31 @@ function renderPageEmargement(session='matin', promotionFilter='') {
       ${existing?.signatureFormateur ? renderSignatureDisplay(existing) : ''}
     </div>`;
 
-  // État local des présences
-  let presences = existing ? {...existing.presences} : {};
-  stagiaires.forEach(s => { if (presences[s.id] === undefined) presences[s.id] = false; });
+  // État local des statuts (present / atelier / absent)
+  let statuts = {};
+  stagiaires.forEach(s => { statuts[s.id] = getStatut(existing, s.id); });
 
   const updateCount = () => {
-    const n = Object.values(presences).filter(Boolean).length;
+    const vals = stagiaires.map(s => statuts[s.id]);
+    const pres = vals.filter(v => v === 'present').length;
+    const atel = vals.filter(v => v === 'atelier').length;
+    const abs  = vals.filter(v => v === 'absent').length;
     const el = document.getElementById('emarg-count');
-    if (el) el.textContent = `${n} / ${stagiaires.length} présent(s)`;
+    if (el) el.innerHTML = `<span class="badge badge-green">${pres} présent(s)</span> <span class="badge badge-blue">🛠️ ${atel} atelier</span> <span class="badge badge-red">${abs} absent(s)</span>`;
   };
   updateCount();
 
-  // Toggle présence
-  document.querySelectorAll('.emarg-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      presences[id] = !presences[id];
-      btn.className = `btn ${presences[id]?'btn-success':'btn-ghost'} btn-sm emarg-toggle`;
-      btn.textContent = presences[id] ? '✅ Présent' : '○ Absent';
+  // Changement de statut via la liste déroulante
+  document.querySelectorAll('.emarg-statut').forEach(sel => {
+    sel.addEventListener('change', () => {
+      statuts[sel.getAttribute('data-id')] = sel.value;
       updateCount();
     });
   });
 
   document.getElementById('btn-tous-presents')?.addEventListener('click', () => {
-    stagiaires.forEach(s => { presences[s.id] = true; });
-    document.querySelectorAll('.emarg-toggle').forEach(btn => {
-      btn.className = 'btn btn-success btn-sm emarg-toggle'; btn.textContent = '✅ Présent';
-    });
+    stagiaires.forEach(s => { statuts[s.id] = 'present'; });
+    document.querySelectorAll('.emarg-statut').forEach(sel => { sel.value = 'present'; });
     updateCount();
   });
 
@@ -1693,7 +1809,7 @@ function renderPageEmargement(session='matin', promotionFilter='') {
   });
 
   document.getElementById('btn-signer-emarg')?.addEventListener('click', () => {
-    openSignatureModal(presences, session, promotion, existing?.id);
+    openSignatureModal(statuts, session, promotion, existing?.id);
   });
 }
 
@@ -1707,12 +1823,13 @@ function renderSignatureDisplay(emarg) {
   </div>`;
 }
 
-function openSignatureModal(presences, session, promotion, existingId) {
-  const n = Object.values(presences).filter(Boolean).length;
-  const total = Object.keys(presences).length;
+function openSignatureModal(statuts, session, promotion, existingId) {
+  const vals = Object.values(statuts);
+  const n = vals.filter(estComptePresent).length;
+  const total = vals.length;
   openModal('✍️ Signature du formateur',
     `<div class="alert alert-info" style="margin-bottom:12px">
-      ${n}/${total} stagiaires marqués présents. En signant, vous validez cette liste.
+      ${n}/${total} stagiaires présents ou en atelier. En signant, vous validez cette liste.
     </div>
     <div class="form-group"><label>Signez dans le cadre ci-dessous</label>
       <div class="sign-canvas-wrap">
@@ -1724,7 +1841,7 @@ function openSignatureModal(presences, session, promotion, existingId) {
     </div>`,
     [
       { label:'Annuler', cls:'btn-ghost', action: closeModal },
-      { label:'✅ Valider et signer', cls:'btn-success', action: () => saveEmargement(presences, session, promotion, existingId) }
+      { label:'✅ Valider et signer', cls:'btn-success', action: () => saveEmargement(statuts, session, promotion, existingId) }
     ]);
 
   // Initialize canvas signature
@@ -1760,16 +1877,19 @@ function openSignatureModal(presences, session, promotion, existingId) {
   }, 80);
 }
 
-function saveEmargement(presences, session, promotion, existingId) {
+function saveEmargement(statuts, session, promotion, existingId) {
   const canvas = document.getElementById('sign-canvas');
   const signatureData = canvas ? canvas.toDataURL('image/png') : null;
   const today = dateStr(new Date());
   const emargements = store.emargements();
+  const presences = {};
+  Object.entries(statuts).forEach(([id, st]) => { presences[id] = estComptePresent(st); });
 
   if (existingId) {
     const i = emargements.findIndex(e => e.id === existingId);
     if (i >= 0) {
       emargements[i].presences = presences;
+      emargements[i].statuts = statuts;
       emargements[i].signatureFormateur = signatureData;
       emargements[i].signedAt = now();
     }
@@ -1781,6 +1901,7 @@ function saveEmargement(presences, session, promotion, existingId) {
       session,
       promotion,
       presences,
+      statuts,
       signatureFormateur: signatureData,
       signedAt: now(),
     });
@@ -1839,11 +1960,12 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
           <div class="table-wrap"><table>
             <thead><tr><th>Stagiaire</th><th>Promotion</th><th>Présence</th></tr></thead>
             <tbody>${stagiaires.map(s => {
-              const present = e.presences?.[s.id] || false;
+              const st = getStatut(e, s.id);
+              const S = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
               return `<tr>
                 <td class="td-bold">${esc(s.prenom)} ${esc(s.nom)}</td>
                 <td>${promoBadge(s.promotion)}</td>
-                <td><span class="badge ${present?'badge-green':'badge-red'}">${present?'✅ Présent':'❌ Absent'}</span></td>
+                <td><span class="badge ${S.cls}">${S.icon} ${S.label}</span></td>
               </tr>`;
             }).join('')}</tbody>
           </table></div>
@@ -1887,7 +2009,7 @@ function exportEmargementsCSV(date) {
     const formateur = store.users().find(u => u.id === e.formateurId);
     const stagiaires = store.stagiaires().filter(s => s.promotion === e.promotion);
     stagiaires.forEach(s => {
-      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
+      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[getStatut(e,s.id)]?.label||'Absent', e.signatureFormateur?'Oui':'Non']);
     });
   });
   downloadCSV(rows, `emargements_${date}.csv`);
@@ -1902,7 +2024,7 @@ async function exportEmargementsXLSX(date, filterPromo='') {
     const f = store.users().find(u => u.id === e.formateurId);
     const stags = store.stagiaires().filter(s => s.promotion === e.promotion);
     stags.forEach(s => rows.push([DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'',
-      f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']));
+      f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, STATUTS_PRESENCE[getStatut(e,s.id)]?.label||'Absent', e.signatureFormateur?'Oui':'Non']));
   });
   if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,8] }], `emargements_${date}.xlsx`))
     toast('Export Excel émargements.','success');
@@ -1913,37 +2035,38 @@ function openEditEmargementModal(emargId) {
   const e = store.emargements().find(x => x.id === emargId);
   if (!e) { toast('Émargement introuvable.','error'); return; }
   const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === e.promotion);
-  const presences = { ...(e.presences || {}) };
+  const statuts = {};
+  stagiaires.forEach(s => { statuts[s.id] = getStatut(e, s.id); });
   const body = `
     <p class="text-xs text-muted" style="margin-bottom:10px">
       ${DEMIJOURNEES[e.session]?.icon||''} ${DEMIJOURNEES[e.session]?.label||e.session} · ${e.promotion} · ${e.date}
       ${e.signatureFormateur ? ' · <span class="badge badge-green">Signé</span>' : ''}
     </p>
-    <div class="text-xs text-muted" style="margin-bottom:10px">Correction administrateur — ajustez les présences puis enregistrez. La modification est tracée dans le journal d'audit.</div>
+    <div class="text-xs text-muted" style="margin-bottom:10px">Correction administrateur — ajustez les statuts puis enregistrez. La modification est tracée dans le journal d'audit.</div>
     <div class="emargement-list">
       ${stagiaires.map(s => `<div class="emargement-row">
         <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
-        <button class="btn ${presences[s.id]?'btn-success':'btn-ghost'} btn-sm edit-emarg-toggle" data-id="${s.id}">${presences[s.id]?'✅ Présent':'○ Absent'}</button>
+        <select class="form-control edit-emarg-statut" data-id="${s.id}" style="max-width:170px">
+          ${Object.entries(STATUTS_PRESENCE).map(([k,v])=>`<option value="${k}" ${statuts[s.id]===k?'selected':''}>${v.icon} ${v.label}</option>`).join('')}
+        </select>
       </div>`).join('')}
     </div>`;
   openModal('✏️ Modifier l\'émargement', body, [
     { label:'Annuler', cls:'btn-ghost', action: closeModal },
-    { label:'💾 Enregistrer', cls:'btn-primary', action: () => saveEmargementAdmin(emargId, presences) },
+    { label:'💾 Enregistrer', cls:'btn-primary', action: () => saveEmargementAdmin(emargId, statuts) },
   ], true);
-  document.querySelectorAll('.edit-emarg-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      presences[id] = !presences[id];
-      btn.className = `btn ${presences[id]?'btn-success':'btn-ghost'} btn-sm edit-emarg-toggle`;
-      btn.textContent = presences[id] ? '✅ Présent' : '○ Absent';
-    });
+  document.querySelectorAll('.edit-emarg-statut').forEach(sel => {
+    sel.addEventListener('change', () => { statuts[sel.getAttribute('data-id')] = sel.value; });
   });
 }
-function saveEmargementAdmin(emargId, presences) {
+function saveEmargementAdmin(emargId, statuts) {
   const emargements = store.emargements();
   const i = emargements.findIndex(x => x.id === emargId);
   if (i < 0) return;
+  const presences = {};
+  Object.entries(statuts).forEach(([id, st]) => { presences[id] = estComptePresent(st); });
   emargements[i].presences = presences;
+  emargements[i].statuts = statuts;
   emargements[i].modifiedByAdmin = true;
   emargements[i].modifiedAt = now();
   emargements[i].modifiedBy = currentUser.id;
@@ -1983,30 +2106,34 @@ function openCreateEmargementModal(date, presetSession='matin', presetPromo='') 
 }
 function openPresenceEditorForNew(date, session, promotion) {
   const stagiaires = store.stagiaires().filter(s => s.statut==='actif' && s.promotion===promotion);
-  const presences = {};
+  const statuts = {};
+  stagiaires.forEach(s => { statuts[s.id] = 'present'; });
   const body = `
     <p class="text-xs text-muted" style="margin-bottom:10px">${DEMIJOURNEES[session]?.icon||''} ${DEMIJOURNEES[session]?.label} · ${promotion} · ${date}</p>
     ${stagiaires.length===0 ? '<div class="empty-state"><div class="icon">🎓</div><p>Aucun stagiaire dans cette promotion.</p></div>' :
     `<div class="emargement-list">
       ${stagiaires.map(s=>`<div class="emargement-row">
         <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
-        <button class="btn btn-ghost btn-sm newe-toggle" data-id="${s.id}">○ Absent</button>
+        <select class="form-control newe-statut" data-id="${s.id}" style="max-width:170px">
+          ${Object.entries(STATUTS_PRESENCE).map(([k,v])=>`<option value="${k}" ${k==='present'?'selected':''}>${v.icon} ${v.label}</option>`).join('')}
+        </select>
       </div>`).join('')}
     </div>`}`;
   openModal('➕ Nouvelle feuille de présence', body, [
     { label:'← Retour', cls:'btn-ghost', action: () => openCreateEmargementModal(date, session, promotion) },
     { label:'💾 Créer', cls:'btn-primary', action: () => {
         const emargements = store.emargements();
+        const presences = {};
+        Object.entries(statuts).forEach(([id, st]) => { presences[id] = estComptePresent(st); });
         emargements.push({ id: uid(), formateurId: getAffectation(date, session, promotion) || currentUser.id,
-          date, session, promotion, presences, createdByAdmin:true, createdAt: now() });
+          date, session, promotion, presences, statuts, createdByAdmin:true, createdAt: now() });
         store.saveEmargements(emargements);
         store.addAudit({ action:'EMARGEMENT_CREE_ADMIN', userId:currentUser.id, detail:`Création admin émargement ${session} ${promotion} — ${date}` });
         closeModal(); toast('Feuille de présence créée.','success'); renderPageEmargementsAdmin(date,'');
     } },
   ], true);
-  document.querySelectorAll('.newe-toggle').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ const id=btn.getAttribute('data-id'); presences[id]=!presences[id];
-      btn.className=`btn ${presences[id]?'btn-success':'btn-ghost'} btn-sm newe-toggle`; btn.textContent=presences[id]?'✅ Présent':'○ Absent'; });
+  document.querySelectorAll('.newe-statut').forEach(sel=>{
+    sel.addEventListener('change', ()=>{ statuts[sel.getAttribute('data-id')] = sel.value; });
   });
 }
 
@@ -2860,7 +2987,7 @@ function renderPageExport() {
       store.emargements().forEach(e => {
         const fmtr = store.users().find(u => u.id === e.formateurId);
         store.stagiaires().filter(s => s.promotion === e.promotion).forEach(s => {
-          rows.push([e.date, e.session, e.promotion, fmtr?fmtr.prenom+' '+fmtr.nom:'', `${esc(s.prenom)} ${esc(s.nom)}`, e.presences?.[s.id]?'Présent':'Absent', e.signatureFormateur?'Oui':'Non']);
+          rows.push([e.date, e.session, e.promotion, fmtr?fmtr.prenom+' '+fmtr.nom:'', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[getStatut(e,s.id)]?.label||'Absent', e.signatureFormateur?'Oui':'Non']);
         });
       });
       downloadCSV(rows, `emargements_${dateStr(new Date())}.csv`); toast('Export émargements.','success');
@@ -3169,6 +3296,7 @@ getNavPages = function() {
         { section:'COLLABORATEURS' },
         { id:'presence-rt',    label:'Présence temps réel', icon:'🟢' },
         { id:'rapport-mensuel',label:'Rapport mensuel',     icon:'📊' },
+        { id:'calendrier-planning',label:'Calendrier planning', icon:'📅' },
       );
     }
   }
@@ -3181,6 +3309,7 @@ navigateTo = function(pageId) {
     'pointage-tache':   renderPagePointageTache,
     'presence-rt':      renderPagePresenceRT,
     'rapport-mensuel':  renderPageRapportMensuel,
+    'calendrier-planning': renderPageCalendrierPlanning,
     'dashboard-dg':     renderPageDashboardDG,
     'objectifs':        renderPageObjectifs,
     'messagerie':       renderPageMessagerie,
@@ -3722,6 +3851,31 @@ function exportAbsencesCSV() {
 }
 
 // ─── PAGE: RAPPORT MENSUEL (Admin) ───────────────────────────────────────────
+// ─── HEURES PRÉVUES vs EFFECTUÉES ─────────────────────────────────────────────
+// PointPro n'a pas de planning individuel : le « prévu » est l'horaire standard
+// (paramètres) appliqué aux jours ouvrables, hors absences approuvées.
+function minutesStandardJour() {
+  const s = store.settings();
+  const [hD,mD] = (s.heureDebut||'08:00').split(':').map(Number);
+  const [hF,mF] = (s.heureFin||'16:00').split(':').map(Number);
+  const pause = s.pauseDejeIner || 0;
+  return Math.max(0, (hF*60+mF) - (hD*60+mD) - pause);
+}
+function isAbsentDate(userId, ds) {
+  return store.absences().some(a => a.userId===userId && a.statut==='approuve' && a.dateDebut<=ds && a.dateFin>=ds);
+}
+function heuresPrevuesJour(userId, ds) {
+  if (isAbsentDate(userId, ds)) return 0;
+  if (!isJourOuvrable(ds)) return 0;
+  return minutesStandardJour();
+}
+function min2h(m) { return Math.round((m/60) * 100) / 100; }
+function ecartBadge(min) {
+  const sign = min >= 0 ? '+' : '−';
+  const cls = min >= -15 ? 'badge-green' : (min >= -120 ? 'badge-amber' : 'badge-red');
+  return `<span class="badge ${cls}">${sign}${formatDuree(Math.abs(min))}</span>`;
+}
+
 function renderPageRapportMensuel(filterMonth='') {
   const today = new Date();
   const ym = filterMonth || `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
@@ -3740,6 +3894,7 @@ function renderPageRapportMensuel(filterMonth='') {
       <div class="page-header-left"><h2>📊 Rapport mensuel</h2><p>${MOIS[month-1]} ${year}</p></div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost btn-sm" id="rp-print">🖨 Imprimer</button>
+        <button class="btn btn-primary btn-sm" id="rp-xlsx">📊 Excel</button>
         <button class="btn btn-ghost btn-sm" id="rp-csv">📥 CSV</button>
       </div>
     </div>
@@ -3751,7 +3906,10 @@ function renderPageRapportMensuel(filterMonth='') {
       <div class="stats-grid">
         <div class="stat-card blue"><div class="stat-label">Collaborateurs suivis</div><div class="stat-value blue">${collabs.length}</div></div>
         <div class="stat-card green"><div class="stat-label">Jours ouvrables</div><div class="stat-value green">${joursOuvrablesMois}</div></div>
-        <div class="stat-card amber"><div class="stat-label">Total heures (équipe)</div>
+        <div class="stat-card teal"><div class="stat-label">Total prévu (équipe)</div>
+          <div class="stat-value teal">${formatDuree(collabs.reduce((acc,u)=>acc+days.reduce((a,d)=>a+heuresPrevuesJour(u.id,d),0),0))}</div>
+        </div>
+        <div class="stat-card amber"><div class="stat-label">Total effectué (équipe)</div>
           <div class="stat-value amber">${formatDuree(collabs.reduce((acc,u)=>acc+days.reduce((a,d)=>a+calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)),0),0))}</div>
         </div>
       </div>
@@ -3761,7 +3919,7 @@ function renderPageRapportMensuel(filterMonth='') {
           <thead>
             <tr>
               <th>Collaborateur</th><th>Fonction</th>
-              <th>Jours pointés</th><th>Total heures</th>
+              <th>Jours pointés</th><th>Prévu</th><th>Effectué</th><th>Écart</th>
               <th>Absences (j)</th><th>Solde CP restant</th>
               <th>Activité principale</th>
             </tr>
@@ -3769,6 +3927,8 @@ function renderPageRapportMensuel(filterMonth='') {
           <tbody>${collabs.map(u => {
             const joursPointes = days.filter(d => calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)) > 0).length;
             const totalMin = days.reduce((a,d) => a + calcHeuresJour(getPointagesUserDay(u.id,d).sort((x,y)=>x.timestamp-y.timestamp)), 0);
+            const prevuMin = days.reduce((a,d) => a + heuresPrevuesJour(u.id, d), 0);
+            const ecartMin = totalMin - prevuMin;
             const absencesMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && a.dateDebut.startsWith(ym));
             const joursAbsents = absencesMois.reduce((a,b)=>a+(b.joursOuvrables||0),0);
             const solde = getSoldeComplet(u.id);
@@ -3781,7 +3941,9 @@ function renderPageRapportMensuel(filterMonth='') {
               <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td class="text-xs text-muted">${u.service||'—'}</td>
               <td>${joursPointes}<span class="text-muted text-xs">/${joursOuvrablesMois}</span></td>
+              <td class="text-muted">${formatDuree(prevuMin)}</td>
               <td><strong>${formatDuree(totalMin)}</strong></td>
+              <td>${ecartBadge(ecartMin)}</td>
               <td>${joursAbsents > 0 ? `<span class="badge badge-amber">${joursAbsents} j</span>` : '—'}</td>
               <td><span class="badge ${solde.total>=10?'badge-green':solde.total>=5?'badge-amber':'badge-red'}">${solde.total} j</span></td>
               <td class="text-xs">${topTache ? TACHE_TYPES[topTache[0]]?.icon+' '+TACHE_TYPES[topTache[0]]?.label+' ('+formatDuree(topTache[1])+')' : '—'}</td>
@@ -3815,23 +3977,215 @@ function renderPageRapportMensuel(filterMonth='') {
   document.getElementById('rp-apply')?.addEventListener('click', () =>
     renderPageRapportMensuel(document.getElementById('rp-month')?.value||''));
   document.getElementById('rp-csv')?.addEventListener('click', () => exportRapportCSV(ym, collabs, days));
+  document.getElementById('rp-xlsx')?.addEventListener('click', () => exportRapportXLSX(ym, collabs, days));
   document.getElementById('rp-print')?.addEventListener('click', () => window.print());
 }
 
 function exportRapportCSV(ym, collabs, days) {
-  const [year, month] = ym.split('-').map(Number);
-  const rows = [['Collaborateur','Fonction','Jours pointés','Total heures (min)','Absences (j)','Solde CP restant']];
+  const rows = [['Collaborateur','Fonction','Jours pointés','Prévu (h)','Effectué (h)','Écart (h)','Absences (j)','Solde CP restant']];
   const joursOuvrablesMois = days.filter(d => isJourOuvrable(d)).length;
+  const h2 = m => (m/60).toFixed(2).replace('.',',');
   collabs.forEach(u => {
     const joursPointes = days.filter(d => calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)) > 0).length;
     const totalMin = days.reduce((a,d) => a + calcHeuresJour(getPointagesUserDay(u.id,d).sort((x,y)=>x.timestamp-y.timestamp)), 0);
+    const prevuMin = days.reduce((a,d) => a + heuresPrevuesJour(u.id, d), 0);
     const absencesMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && a.dateDebut.startsWith(ym));
     const joursAbsents = absencesMois.reduce((a,b)=>a+(b.joursOuvrables||0),0);
     const solde = getSoldeComplet(u.id);
-    rows.push([`${esc(u.prenom)} ${esc(u.nom)}`, u.service||'', `${joursPointes}/${joursOuvrablesMois}`, totalMin, joursAbsents, solde.total]);
+    rows.push([`${esc(u.prenom)} ${esc(u.nom)}`, u.service||'', `${joursPointes}/${joursOuvrablesMois}`, h2(prevuMin), h2(totalMin), h2(totalMin-prevuMin), joursAbsents, solde.total]);
   });
   downloadCSV(rows, `rapport_mensuel_${ym}.csv`);
   toast('Rapport mensuel exporté.','success');
+}
+
+async function exportRapportXLSX(ym, collabs, days) {
+  const [year, month] = ym.split('-').map(Number);
+  const joursOuvrablesMois = days.filter(d => isJourOuvrable(d)).length;
+  const s1 = [
+    [`Rapport mensuel — ${MOIS[month-1]} ${year}`],
+    [`Exporté le ${new Date().toLocaleDateString('fr-FR')} · HYS PointPro`],
+    [],
+    ['Collaborateur','Fonction','Jours pointés','Jours ouvrables','Prévu (h)','Effectué (h)','Écart (h)','Absences (j)','Solde CP (j)'],
+  ];
+  let tP=0, tE=0;
+  collabs.forEach(u => {
+    const joursPointes = days.filter(d => calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)) > 0).length;
+    const totalMin = days.reduce((a,d) => a + calcHeuresJour(getPointagesUserDay(u.id,d).sort((x,y)=>x.timestamp-y.timestamp)), 0);
+    const prevuMin = days.reduce((a,d) => a + heuresPrevuesJour(u.id, d), 0);
+    const absencesMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && a.dateDebut.startsWith(ym));
+    const joursAbsents = absencesMois.reduce((a,b)=>a+(b.joursOuvrables||0),0);
+    const solde = getSoldeComplet(u.id);
+    tP += prevuMin; tE += totalMin;
+    s1.push([`${u.prenom} ${u.nom}`, u.service||'', joursPointes, joursOuvrablesMois,
+      min2h(prevuMin), min2h(totalMin), min2h(totalMin-prevuMin), joursAbsents, solde.total]);
+  });
+  s1.push([]);
+  s1.push(['TOTAL ÉQUIPE','','','', min2h(tP), min2h(tE), min2h(tE-tP), '', '']);
+  if (await downloadXLSX([{ name:'Relevé mensuel', rows:s1, cols:[26,24,13,15,10,12,10,12,12] }], `rapport_mensuel_${ym}.xlsx`))
+    toast('Rapport mensuel exporté en Excel.','success');
+}
+
+// ─── PAGE: CALENDRIER PLANNING (Admin) ───────────────────────────────────────
+// Projette l'horaire standard sur les vraies dates du mois et le compare aux
+// heures réellement pointées. Navigation mois par mois, équipe ou salarié.
+let _calScope = 'all';
+function renderPageCalendrierPlanning(filterMonth='', filterUser=null) {
+  const now2 = new Date();
+  const ym = filterMonth || `${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,'0')}`;
+  const [year, month] = ym.split('-').map(Number);
+  if (filterUser !== null) _calScope = filterUser;
+  const scope = _calScope;
+  const collabs = store.users().filter(u => u.role === ROLES.COLLAB && u.statut === 'actif');
+  const todayStr = dateStr(now2);
+
+  const first = new Date(year, month-1, 1);
+  const nbJours = new Date(year, month, 0).getDate();
+  const decalage = (first.getDay()+6) % 7;
+  const cells = [];
+  for (let i=0;i<decalage;i++) cells.push(null);
+  for (let d=1; d<=nbJours; d++) cells.push(dateStr(new Date(year, month-1, d)));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const prevuDay = ds => scope==='all' ? collabs.reduce((a,u)=>a+heuresPrevuesJour(u.id, ds), 0) : heuresPrevuesJour(scope, ds);
+  const faitDay = ds => {
+    if (ds > todayStr) return null;
+    return scope==='all' ? collabs.reduce((a,u)=>a+calcHeuresJour(getPointagesUserDay(u.id, ds)), 0) : calcHeuresJour(getPointagesUserDay(scope, ds));
+  };
+
+  function renderCell(ds) {
+    if (!ds) return `<div class="cal-cell cal-empty"></div>`;
+    const num = Number(ds.slice(-2));
+    const isToday = ds === todayStr, futur = ds > todayStr;
+    const prevu = prevuDay(ds), fait = faitDay(ds);
+    let planLabel;
+    if (scope === 'all') planLabel = prevu > 0 ? `Prévu ${formatDuree(prevu)}` : 'Repos';
+    else if (isAbsentDate(scope, ds)) planLabel = '🌴 Absence';
+    else if (prevu > 0) planLabel = '💼 '+formatDuree(prevu);
+    else planLabel = '💤 Repos';
+    let bg = '#ffffff', edge = 'var(--border)';
+    if (futur) bg = '#fafafa';
+    else if (prevu === 0) bg = '#f4f4f5';
+    else if (fait >= prevu - 15) { bg = '#ecfdf3'; edge = '#a7f3d0'; }
+    else if (fait >= prevu * 0.75) { bg = '#fffbeb'; edge = '#fde68a'; }
+    else { bg = '#fef2f2'; edge = '#fecaca'; }
+    let reelHtml = '';
+    if (!futur && (prevu > 0 || fait > 0)) {
+      const ec = fait - prevu;
+      const cls = ec >= -15 ? 'ec-green' : (ec >= -120 ? 'ec-amber' : 'ec-red');
+      reelHtml = `<div class="cal-reel">Fait <strong>${formatDuree(fait)}</strong> <span class="cal-ec ${cls}">${ec>=0?'+':'−'}${formatDuree(Math.abs(ec))}</span></div>`;
+    } else if (futur && prevu > 0) reelHtml = `<div class="cal-reel cal-futur">à venir</div>`;
+    return `<div class="cal-cell" style="background:${bg};border-color:${edge}">
+      <div class="cal-num ${isToday?'cal-today':''}">${num}</div>
+      <div class="cal-plan">${esc(planLabel)}</div>${reelHtml}</div>`;
+  }
+
+  const semaines = [];
+  for (let i=0; i<cells.length; i+=7) {
+    const dates = cells.slice(i, i+7).filter(Boolean);
+    if (!dates.length) continue;
+    const p = dates.reduce((a,ds)=>a+prevuDay(ds), 0);
+    const f = dates.reduce((a,ds)=>a+(faitDay(ds)||0), 0);
+    semaines.push({ debut:dates[0], fin:dates[dates.length-1], prevu:p, fait:f, passe:dates.some(ds=>ds<=todayStr) });
+  }
+  const prevYM = (() => { const d = new Date(year, month-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const nextYM = (() => { const d = new Date(year, month, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const scopeLabel = scope==='all' ? "toute l'équipe" : (() => { const u = collabs.find(x=>x.id===scope); return u ? `${u.prenom} ${u.nom}` : ''; })();
+  const totPrevu = semaines.reduce((a,s)=>a+s.prevu,0), totFait = semaines.reduce((a,s)=>a+s.fait,0);
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <style>
+      .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+      .cal-head{text-align:center;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;padding:4px 0}
+      .cal-cell{min-height:78px;border:1px solid var(--border);border-radius:10px;padding:6px 7px;display:flex;flex-direction:column;gap:3px}
+      .cal-empty{background:transparent;border:none}
+      .cal-num{font-size:13px;font-weight:700;color:var(--text)}
+      .cal-today{display:inline-block;background:#2ebd6b;color:#fff;border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center}
+      .cal-plan{font-size:10.5px;color:var(--text3);line-height:1.25}
+      .cal-reel{font-size:11px;margin-top:auto;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+      .cal-futur{color:var(--text3);font-style:italic}
+      .cal-ec{font-size:10px;font-weight:700;padding:1px 5px;border-radius:20px}
+      .ec-green{background:#dcfce7;color:#15803d}.ec-amber{background:#fef3c7;color:#b45309}.ec-red{background:#fee2e2;color:#b91c1c}
+      @media(max-width:640px){.cal-cell{min-height:62px;padding:4px}.cal-plan{font-size:9px}.cal-head{font-size:9px}}
+    </style>
+    <div class="page-header">
+      <div class="page-header-left"><h2>📅 Calendrier planning</h2><p>${MOIS[month-1]} ${year} · ${scopeLabel}</p></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" id="cal-xlsx">📊 Excel</button>
+        <button class="btn btn-ghost btn-sm" id="cal-print">🖨 Imprimer</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar" style="align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="cal-prev">← Mois précédent</button>
+        <input type="month" class="form-control" id="cal-month" value="${ym}" style="max-width:170px">
+        <button class="btn btn-ghost btn-sm" id="cal-next">Mois suivant →</button>
+        <select class="form-control" id="cal-user" style="max-width:220px">
+          <option value="all" ${scope==='all'?'selected':''}>👥 Toute l'équipe</option>
+          ${collabs.map(u=>`<option value="${u.id}" ${scope===u.id?'selected':''}>${esc(u.prenom)} ${esc(u.nom)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card teal"><div class="stat-label">Prévu (mois)</div><div class="stat-value teal">${formatDuree(totPrevu)}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Effectué (mois)</div><div class="stat-value amber">${formatDuree(totFait)}</div></div>
+        <div class="stat-card ${totFait-totPrevu>=0?'green':'red'}"><div class="stat-label">Écart</div><div class="stat-value ${totFait-totPrevu>=0?'green':'red'}">${totFait-totPrevu>=0?'+':'−'}${formatDuree(Math.abs(totFait-totPrevu))}</div></div>
+      </div>
+      <div class="card"><div class="card-body" style="padding:14px">
+        <div class="cal-grid" style="margin-bottom:6px">${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'].map(j=>`<div class="cal-head">${j}</div>`).join('')}</div>
+        <div class="cal-grid">${cells.map(renderCell).join('')}</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--text3)">
+          <span>🟩 Heures tenues</span><span>🟨 Léger manque</span><span>🟥 Écart important</span><span>⬜ Repos / à venir</span>
+        </div>
+      </div></div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Relevé par semaine — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Semaine</th><th>Prévu</th><th>Effectué</th><th>Écart</th></tr></thead>
+          <tbody>${semaines.map(s=>`<tr>
+            <td class="td-bold">${s.debut.slice(8)}→${s.fin.slice(8)} ${MOIS[month-1].slice(0,4)}.</td>
+            <td class="text-muted">${formatDuree(s.prevu)}</td>
+            <td><strong>${s.passe?formatDuree(s.fait):'—'}</strong></td>
+            <td>${s.passe?ecartBadge(s.fait-s.prevu):'<span class="text-muted text-xs">à venir</span>'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+      ${scope==='all' ? `<div class="card">
+        <div class="card-header"><div class="card-title">Relevé par collaborateur — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Collaborateur</th><th>Prévu</th><th>Effectué</th><th>Écart</th></tr></thead>
+          <tbody>${collabs.map(u=>{
+            const daysM = cells.filter(Boolean);
+            const p = daysM.reduce((a,ds)=>a+heuresPrevuesJour(u.id,ds),0);
+            const f = daysM.filter(ds=>ds<=todayStr).reduce((a,ds)=>a+calcHeuresJour(getPointagesUserDay(u.id,ds)),0);
+            return `<tr><td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
+              <td class="text-muted">${formatDuree(p)}</td><td><strong>${formatDuree(f)}</strong></td><td>${ecartBadge(f-p)}</td></tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+    </div>`;
+  const go = (m,u) => renderPageCalendrierPlanning(m, u);
+  document.getElementById('cal-prev')?.addEventListener('click', ()=>go(prevYM, scope));
+  document.getElementById('cal-next')?.addEventListener('click', ()=>go(nextYM, scope));
+  document.getElementById('cal-month')?.addEventListener('change', e=>go(e.target.value, scope));
+  document.getElementById('cal-user')?.addEventListener('change', e=>go(ym, e.target.value));
+  document.getElementById('cal-print')?.addEventListener('click', ()=>window.print());
+  document.getElementById('cal-xlsx')?.addEventListener('click', async () => {
+    const sem = [[`Calendrier planning — ${MOIS[month-1]} ${year} · ${scopeLabel}`], [], ['Semaine','Prévu (h)','Effectué (h)','Écart (h)']];
+    semaines.forEach(s => sem.push([`${s.debut} → ${s.fin}`, min2h(s.prevu), s.passe?min2h(s.fait):'', s.passe?min2h(s.fait-s.prevu):'']));
+    sem.push([]); sem.push(['TOTAL', min2h(totPrevu), min2h(totFait), min2h(totFait-totPrevu)]);
+    const sheets = [{ name:'Par semaine', rows:sem, cols:[26,12,13,10] }];
+    if (scope === 'all') {
+      const daysM = cells.filter(Boolean);
+      const perC = [[`Relevé par collaborateur — ${MOIS[month-1]} ${year}`], [], ['Collaborateur','Prévu (h)','Effectué (h)','Écart (h)']];
+      collabs.forEach(u => {
+        const p = daysM.reduce((a,ds)=>a+heuresPrevuesJour(u.id,ds),0);
+        const f = daysM.filter(ds=>ds<=todayStr).reduce((a,ds)=>a+calcHeuresJour(getPointagesUserDay(u.id,ds)),0);
+        perC.push([`${u.prenom} ${u.nom}`, min2h(p), min2h(f), min2h(f-p)]);
+      });
+      sheets.push({ name:'Par collaborateur', rows:perC, cols:[26,12,13,10] });
+    }
+    if (await downloadXLSX(sheets, `calendrier_${ym}.xlsx`)) toast('Calendrier exporté en Excel.','success');
+  });
 }
 
 // ─── SEED COLLABS HYS ─────────────────────────────────────────────────────────
