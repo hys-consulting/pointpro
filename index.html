@@ -1281,6 +1281,7 @@ function getNavPages() {
     { id:'affectation-formateurs',label:'Affectation des sessions', icon:'🗓️' },
     { id:'emargement',      label:'Prendre présence',     icon:'✍️' },
     { id:'presences-stats', label:'Présences & assiduité',icon:'📊' },
+    { id:'facturation-formateurs', label:'Heures formateurs', icon:'🧾' },
     { id:'stagiaires',      label:'Stagiaires',         icon:'🎓' },
     { id:'objectifs',       label:'Objectifs',            icon:'🎯' },
     { id:'modules',         label:'Modules formation',    icon:'📚' },
@@ -1329,6 +1330,7 @@ function navigateTo(pageId) {
       case 'emargements-admin': renderPageEmargementsAdmin(); break;
       case 'affectation-formateurs': renderPageAffectationFormateurs(); break;
       case 'presences-stats':   renderPagePresencesStats(); break;
+      case 'facturation-formateurs': renderPageRapportFormateurs(); break;
       case 'stagiaires':        renderPageStagiaires(); break;
       case 'objectifs':         renderPageObjectifs(); break;
       case 'messagerie':        renderPageMessagerie(); break;
@@ -2321,6 +2323,155 @@ async function exportPresencesXLSX(filterPromo='') {
     { name:'Par promotion', rows:s1, cols:[14,10,10,10] },
     { name:'Assiduité', rows:s2, cols:[26,12,10,14,10,10] },
   ], `presences_assiduite_${dateStr(new Date())}.xlsx`)) toast('Export Excel présences.','success');
+}
+
+// ─── PAGE: HEURES FORMATEURS EXTERNES (facturation) ──────────────────────────
+// Base de facturation = sessions animées (demi-journées émargées).
+// Matin 08:00-12:00 = 4h · Après-midi 13:00-16:00 = 3h.
+function dureeSessionMin(session) {
+  const d = DEMIJOURNEES[session]; if (!d) return 0;
+  const [hd,md] = d.heureDebut.split(':').map(Number);
+  const [hf,mf] = d.heureFin.split(':').map(Number);
+  return Math.max(0, (hf*60+mf) - (hd*60+md));
+}
+// Intervenant facturable d'une session : le formateur externe affecté, sinon
+// le signataire s'il est formateur externe.
+function intervenantFacturable(e) {
+  const affId = getAffectation(e.date, e.session, e.promotion);
+  const users = store.users();
+  const isFExt = id => { const u = users.find(x=>x.id===id); return u && u.role === ROLES.FORMATEUR ? u : null; };
+  return isFExt(affId) || isFExt(e.formateurId) || null;
+}
+
+// Taux horaire par formateur externe (€/h), stocké dans settings (synchronisé).
+function getTaux(userId) { const t = store.settings().tauxHoraires || {}; return Number(t[userId]) || 0; }
+function setTaux(userId, val) {
+  const s = store.settings(); s.tauxHoraires = s.tauxHoraires || {};
+  const n = parseFloat(String(val).replace(',', '.'));
+  if (n > 0) s.tauxHoraires[userId] = n; else delete s.tauxHoraires[userId];
+  store.saveSettings(s);
+}
+function fmtEuro(x) { return (Number(x)||0).toLocaleString('fr-FR', { style:'currency', currency:'EUR' }); }
+// Pré-remplissage unique : M. SOULAIMANA MOUSSA à 25 €/h (modifiable ensuite).
+function seedTauxFormateurs() {
+  const s = store.settings();
+  if (s.tauxSeeded) return;
+  const u = store.users().find(x => x.role === ROLES.FORMATEUR &&
+    /soulaimana/.test(`${x.prenom} ${x.nom}`.toLowerCase()) && /moussa/.test(`${x.prenom} ${x.nom}`.toLowerCase()));
+  if (!u) return; // pas encore dans le système : on réessaiera plus tard
+  s.tauxHoraires = s.tauxHoraires || {};
+  if (s.tauxHoraires[u.id] === undefined) s.tauxHoraires[u.id] = 25;
+  s.tauxSeeded = true;
+  store.saveSettings(s);
+}
+
+function renderPageRapportFormateurs(filterMonth='') {
+  seedTauxFormateurs();
+  const now2 = new Date();
+  const ym = filterMonth || `${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,'0')}`;
+  const [year, month] = ym.split('-').map(Number);
+  const emargs = store.emargements().filter(e => (e.date||'').startsWith(ym)).sort((a,b)=>(a.date>b.date?1:-1));
+
+  const stats = {}; const detail = [];
+  emargs.forEach(e => {
+    const f = intervenantFacturable(e);
+    if (!f) return;
+    if (!stats[f.id]) stats[f.id] = { user:f, matin:0, apm:0, min:0 };
+    const s = stats[f.id];
+    if (e.session==='matin') s.matin++; else if (e.session==='apresmidi') s.apm++;
+    const mn = dureeSessionMin(e.session);
+    s.min += mn;
+    detail.push({ date:e.date, formateur:`${f.prenom} ${f.nom}`, session:e.session, promotion:e.promotion||'', min:mn, signe:!!e.signatureFormateur });
+  });
+  const rows = Object.values(stats).sort((a,b)=>b.min-a.min);
+  const totMin = rows.reduce((a,s)=>a+s.min,0);
+  const totSessions = rows.reduce((a,s)=>a+s.matin+s.apm,0);
+  const totMontant = rows.reduce((a,s)=>a+(s.min/60)*getTaux(s.user.id),0);
+  const prevYM = (() => { const d = new Date(year, month-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const nextYM = (() => { const d = new Date(year, month, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🧾 Heures formateurs externes</h2><p>Base de facturation — sessions animées · ${MOIS[month-1]} ${year}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="fx-xlsx">📊 Excel</button>
+        <button class="btn btn-ghost btn-sm" id="fx-csv">📥 CSV</button>
+        <button class="btn btn-ghost btn-sm" id="fx-print">🖨 Imprimer</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar" style="align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="fx-prev">← Mois précédent</button>
+        <input type="month" class="form-control" id="fx-month" value="${ym}" style="max-width:170px">
+        <button class="btn btn-ghost btn-sm" id="fx-next">Mois suivant →</button>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card blue"><div class="stat-label">Formateurs facturables</div><div class="stat-value blue">${rows.length}</div></div>
+        <div class="stat-card teal"><div class="stat-label">Sessions animées</div><div class="stat-value teal">${totSessions}</div></div>
+        <div class="stat-card green"><div class="stat-label">Total heures à facturer</div><div class="stat-value green">${formatDuree(totMin)}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Montant total à facturer</div><div class="stat-value amber">${fmtEuro(totMontant)}</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Synthèse par formateur — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Formateur externe</th><th>🌅 Matin</th><th>🌇 Après-midi</th><th>Sessions</th><th>Heures</th><th>Taux (€/h)</th><th>Montant</th></tr></thead>
+          <tbody>${rows.length===0 ? '<tr><td colspan="7" class="text-muted">Aucune session animée par un formateur externe ce mois-ci.</td></tr>' :
+            rows.map(s=>{ const taux=getTaux(s.user.id); const montant=(s.min/60)*taux; return `<tr>
+              <td class="td-bold">${esc(s.user.prenom)} ${esc(s.user.nom)}</td>
+              <td>${s.matin}</td><td>${s.apm}</td>
+              <td>${s.matin+s.apm}</td>
+              <td><strong>${formatDuree(s.min)}</strong></td>
+              <td><input type="number" min="0" step="0.5" class="form-control fx-taux" data-id="${s.user.id}" value="${taux||''}" placeholder="—" style="max-width:92px"></td>
+              <td><strong>${taux?fmtEuro(montant):'—'}</strong></td>
+            </tr>`;}).join('')}
+            ${rows.length? `<tr style="border-top:2px solid var(--border)"><td class="td-bold">TOTAL</td><td>${rows.reduce((a,s)=>a+s.matin,0)}</td><td>${rows.reduce((a,s)=>a+s.apm,0)}</td><td class="td-bold">${totSessions}</td><td class="td-bold">${formatDuree(totMin)}</td><td></td><td class="td-bold">${fmtEuro(totMontant)}</td></tr>`:''}
+          </tbody>
+        </table></div>
+        <div class="text-xs text-muted" style="padding:10px 14px">💡 Base : chaque demi-journée émargée compte comme session animée (matin 4h, après-midi 3h). Attribution au formateur affecté à la session, sinon au signataire. Saisissez le taux horaire de chaque formateur — le montant se calcule automatiquement.</div>
+      </div>
+
+      ${detail.length ? `<div class="card">
+        <div class="card-header"><div class="card-title">Détail des sessions (justificatif)</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Date</th><th>Formateur</th><th>Demi-journée</th><th>Promotion</th><th>Heures</th><th>Émargée</th></tr></thead>
+          <tbody>${detail.map(d=>`<tr>
+            <td>${d.date}</td><td class="td-bold">${esc(d.formateur)}</td>
+            <td>${DEMIJOURNEES[d.session]?.icon||''} ${DEMIJOURNEES[d.session]?.label||d.session}</td>
+            <td>${promoBadge(d.promotion)}</td>
+            <td>${formatDuree(d.min)}</td>
+            <td>${d.signe?'<span class="badge badge-green">✅ signée</span>':'<span class="badge badge-amber">non signée</span>'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+    </div>`;
+
+  const go = m => renderPageRapportFormateurs(m);
+  document.getElementById('fx-month')?.addEventListener('change', e => go(e.target.value));
+  document.getElementById('fx-prev')?.addEventListener('click', () => go(prevYM));
+  document.getElementById('fx-next')?.addEventListener('click', () => go(nextYM));
+  document.getElementById('fx-print')?.addEventListener('click', () => window.print());
+  document.querySelectorAll('.fx-taux').forEach(inp => {
+    inp.addEventListener('change', () => { setTaux(inp.getAttribute('data-id'), inp.value); renderPageRapportFormateurs(ym); });
+  });
+  document.getElementById('fx-csv')?.addEventListener('click', () => {
+    const r = [['Formateur externe','Sessions matin','Sessions après-midi','Total sessions','Heures (h)','Taux (€/h)','Montant (€)']];
+    rows.forEach(s => { const t=getTaux(s.user.id); const m=(s.min/60)*t; r.push([`${s.user.prenom} ${s.user.nom}`, s.matin, s.apm, s.matin+s.apm, (s.min/60).toFixed(2).replace('.',','), t?String(t).replace('.',','):'', t?m.toFixed(2).replace('.',','):'']); });
+    downloadCSV(r, `heures_formateurs_${ym}.csv`); toast('Export CSV formateurs.','success');
+  });
+  document.getElementById('fx-xlsx')?.addEventListener('click', async () => {
+    const s1 = [[`Heures formateurs externes — ${MOIS[month-1]} ${year}`], [`Exporté le ${new Date().toLocaleDateString('fr-FR')}`], [],
+      ['Formateur externe','Sessions matin','Sessions après-midi','Total sessions','Heures','Taux (€/h)','Montant (€)']];
+    rows.forEach(s => { const t=getTaux(s.user.id); s1.push([`${s.user.prenom} ${s.user.nom}`, s.matin, s.apm, s.matin+s.apm, min2h(s.min), t||'', t?Math.round((s.min/60)*t*100)/100:'']); });
+    s1.push([]); s1.push(['TOTAL', rows.reduce((a,s)=>a+s.matin,0), rows.reduce((a,s)=>a+s.apm,0), totSessions, min2h(totMin), '', Math.round(totMontant*100)/100]);
+    const s2 = [['Détail des sessions'], [], ['Date','Formateur','Demi-journée','Promotion','Heures','Émargée']];
+    detail.forEach(d => s2.push([d.date, d.formateur, DEMIJOURNEES[d.session]?.label||d.session, d.promotion, min2h(d.min), d.signe?'Oui':'Non']));
+    if (await downloadXLSX([
+      { name:'Synthèse', rows:s1, cols:[26,14,18,14,10,12,14] },
+      { name:'Détail sessions', rows:s2, cols:[12,26,14,12,10,10] },
+    ], `heures_formateurs_${ym}.xlsx`)) toast('Export Excel formateurs.','success');
+  });
 }
 
 function printEmargement(emargId) {
