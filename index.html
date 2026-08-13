@@ -690,7 +690,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
           <svg width="40" height="40" viewBox="0 0 200 200"><use href="#hys-logo"/></svg>
           <div class="brand-text">
             <div class="name"><span class="hys-g">HYS</span> PointPro</div>
-            <div class="version">v2.3 · CFA Apprentissage</div>
+            <div class="version">v2.4 · CFA Apprentissage</div>
           </div>
         </div>
         <button onclick="openSearch()" title="Recherche (Ctrl+K)" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.6);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;margin-top:8px;width:100%;text-align:left;font-family:var(--font)">🔍 Rechercher… <kbd style="float:right;font-size:10px;opacity:.6">Ctrl+K</kbd></button>
@@ -754,7 +754,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
 
 // ─── CONFIG SUPABASE (à modifier si vous utilisez Supabase) ──────────────────
 // Voir Paramètres → Supabase dans l'app pour les instructions
-const APP_VERSION = '2.3';
+const APP_VERSION = '2.4';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 8 * 3600 * 1000;
@@ -768,11 +768,13 @@ const ROLES = {
   ADMIN:   'admin_hys',
   FORMATEUR: 'formateur_externe',
   COLLAB:  'collaborateur',
+  STAGIAIRE: 'stagiaire',
 };
 const ROLE_LABELS = {
   admin_hys:          '👑 Admin HYS',
   formateur_externe:  '🎓 Formateur externe',
   collaborateur:      '👤 Collaborateur',
+  stagiaire:          '🎒 Apprenti',
 };
 
 // ─── TYPES DE DEMI-JOURNÉE ──────────────────────────────────────────────────
@@ -826,6 +828,7 @@ let currentUser = null;
 let currentPage = null;
 let lastActivity = Date.now();
 let lockoutInterval = null;
+let currentConnexionId = null; // connexion apprenti ouverte (traçabilité FOAD Qualiopi)
 
 // ─── STORE KEYS ──────────────────────────────────────────────────────────────
 const SK = {
@@ -841,6 +844,7 @@ const SK = {
   OBJECTIFS:    'hys_objectifs',
   MESSAGES:     'hys_messages',
   LOGIN_ATTEMPTS:'hys_login_attempts',
+  CONNEXIONS:   'hys_connexions_stagiaires',
 };
 
 // ─── STORE ────────────────────────────────────────────────────────────────────
@@ -871,6 +875,8 @@ const store = {
   audit()           { return this.get(SK.AUDIT) || []; },
   stagiaires()      { return this.get(SK.STAGIAIRES) || []; },
   saveStagiaires(s) { this.set(SK.STAGIAIRES, s); },
+  connexions()      { return this.get(SK.CONNEXIONS) || []; },
+  saveConnexions(c) { this.set(SK.CONNEXIONS, c); },
   emargements()     { return this.get(SK.EMARGEMENTS) || []; },
   saveEmargements(e){ this.set(SK.EMARGEMENTS, e); },
   semainesCfa()     { return this.get(SK.SEMAINES_CFA) || []; },
@@ -1279,6 +1285,38 @@ function celebrate(msg) {
   } catch {}
 }
 
+// ─── TRAÇABILITÉ CONNEXIONS APPRENTIS (portail stagiaire, réforme Qualiopi FOAD) ──
+// Chaque connexion d'un compte "stagiaire" est horodatée (loginAt/logoutAt/durée)
+// dans hys_connexions_stagiaires, indépendamment du journal d'audit général,
+// pour produire un export dédié en cas de contrôle.
+function openConnexionStagiaire(user) {
+  try {
+    const connexions = store.connexions();
+    // Ferme toute connexion restée ouverte pour ce compte (onglet fermé sans déconnexion
+    // explicite lors d'une session précédente) — durée non déterminable, mise à 0.
+    connexions.forEach(c => { if (c.userId === user.id && !c.logoutAt) { c.logoutAt = c.loginAt; c.dureeMin = 0; } });
+    const id = uid();
+    connexions.push({ id, stagiaireId: user.stagiaireId || null, userId: user.id, loginAt: now(), logoutAt: null, dureeMin: null, createdAt: now() });
+    store.saveConnexions(connexions);
+    currentConnexionId = id;
+  } catch(e) { console.warn('[HYS] openConnexionStagiaire:', e); }
+}
+function closeConnexionStagiaire() {
+  try {
+    if (!currentConnexionId) return;
+    const connexions = store.connexions();
+    const c = connexions.find(x => x.id === currentConnexionId);
+    if (c && !c.logoutAt) {
+      c.logoutAt = now();
+      c.dureeMin = Math.max(0, Math.round((new Date(c.logoutAt) - new Date(c.loginAt)) / 60000));
+      store.saveConnexions(connexions);
+    }
+    currentConnexionId = null;
+  } catch(e) { console.warn('[HYS] closeConnexionStagiaire:', e); }
+}
+// Filet de sécurité : capture la fermeture d'onglet/navigateur sans déconnexion explicite.
+window.addEventListener('pagehide', () => { if (currentConnexionId) closeConnexionStagiaire(); });
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 async function doLogin() {
   const username = (document.getElementById('login-username')?.value||'').trim();
@@ -1308,6 +1346,7 @@ async function doLogin() {
   store.set(SK.SESSION, { userId: user.id, loginAt: Date.now() });
   currentUser = store.users().find(u => u.id === user.id);
   store.addAudit({ action:'LOGIN', userId:user.id, detail:`Connexion : ${user.prenom} ${user.nom} (${ROLE_LABELS[user.role]})` });
+  if (currentUser.role === ROLES.STAGIAIRE) openConnexionStagiaire(currentUser);
   if (document.getElementById('login-password')) document.getElementById('login-password').value = '';
   if (document.getElementById('login-alert')) document.getElementById('login-alert').style.display = 'none';
   if (currentUser.firstLogin) { showView('change-pwd'); return; }
@@ -1349,6 +1388,7 @@ async function doChangePassword() {
 }
 function doLogout() {
   if (currentUser) store.addAudit({ action:'LOGOUT', userId:currentUser.id, detail:`Déconnexion : ${esc(currentUser.prenom)} ${esc(currentUser.nom)}` });
+  if (currentUser?.role === ROLES.STAGIAIRE) closeConnexionStagiaire();
   supaAuthSignOut();
   store.remove(SK.SESSION); currentUser = null; currentPage = null;
   ['login-username','login-password'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
@@ -1360,7 +1400,14 @@ function restoreSession() {
   if (s) {
     const user = store.users().find(u => u.id === s.userId && u.statut === 'actif');
     if (user && Date.now()-(s.loginAt||0) < SESSION_TIMEOUT_MS) {
-      currentUser = user; supaAuthRestore(); if (user.firstLogin) { showView('change-pwd'); return; } showApp(); return;
+      currentUser = user; supaAuthRestore();
+      // Reprend la connexion ouverte (traçabilité FOAD) après un simple rechargement de page —
+      // sans ça une déconnexion explicite plus tard ne la refermerait jamais.
+      if (user.role === ROLES.STAGIAIRE) {
+        const open = store.connexions().filter(c => c.userId === user.id && !c.logoutAt).sort((a,b) => b.loginAt.localeCompare(a.loginAt))[0];
+        currentConnexionId = open ? open.id : null;
+      }
+      if (user.firstLogin) { showView('change-pwd'); return; } showApp(); return;
     }
     store.remove(SK.SESSION);
   }
@@ -1398,6 +1445,7 @@ function getNavPages() {
     { id:'presences-stats', label:'Présences & assiduité',icon:'📊' },
     { id:'facturation-formateurs', label:'Heures formateurs', icon:'🧾' },
     { id:'stagiaires',      label:'Stagiaires',         icon:'🎓' },
+    { id:'connexions-stagiaires', label:'Connexions apprentis', icon:'📶' },
     { id:'objectifs',       label:'Objectifs',            icon:'🎯' },
     { id:'modules',         label:'Modules formation',    icon:'📚' },
     { id:'pointage-admin',  label:'Pointages',          icon:'⏱️' },
@@ -1405,6 +1453,7 @@ function getNavPages() {
     { id:'notifications',   label:'Notifications',        icon:'🔔' },
     { id:'messagerie',      label:'Messagerie',           icon:'💬' },
     { section:'GESTION' },
+    { id:'conges-admin',    label:'Congés & absences',  icon:'🌴' },
     { id:'utilisateurs',    label:'Utilisateurs',       icon:'👥' },
     { id:'audit',           label:'Journal d\'audit',   icon:'🛡️' },
     { id:'export',          label:'Export',             icon:'📤' },
@@ -1419,10 +1468,17 @@ function getNavPages() {
     { id:'objectifs',       label:'Mes objectifs',      icon:'🎯' },
     { id:'messagerie',      label:'Messagerie',         icon:'💬' },
   ];
+  if (role === ROLES.STAGIAIRE) return [
+    { section:'MON ESPACE' },
+    { id:'stagiaire-accueil',    label:'Accueil',          icon:'🏠' },
+    { id:'stagiaire-emargement', label:'Mon émargement',   icon:'✍️' },
+    { id:'stagiaire-planning',   label:'Mon planning',     icon:'🗓️' },
+  ];
   // COLLAB
   const collabPages = [
     { id:'pointage',        label:'Mon pointage',       icon:'⏱️' },
     { id:'mon-historique',  label:'Mon historique',     icon:'📋' },
+    { id:'mes-conges',      label:'Mes congés',         icon:'🌴' },
   ];
   const perms = getUserPermissions(currentUser);
   if (perms.includes('emargements') || perms.includes('affectation_sessions')) {
@@ -1443,6 +1499,7 @@ const EXTRA_PERMISSIONS = {
 function getUserPermissions(u) { return Array.isArray(u?.permissions) ? u.permissions : []; }
 function getDefaultPage() {
   if (currentUser?.role === ROLES.ADMIN) return 'dashboard-dg';
+  if (currentUser?.role === ROLES.STAGIAIRE) return 'stagiaire-accueil';
   const pages = getNavPages().filter(p => p.id); return pages[0]?.id || 'pointage';
 }
 
@@ -1473,6 +1530,12 @@ function navigateTo(pageId) {
       case 'export':            renderPageExport(); break;
       case 'parametres':        renderPageParametres(); break;
       case 'sync-status':       renderPageParametres(); break;
+      case 'mes-conges':        renderPageMesConges(); break;
+      case 'conges-admin':      renderPageCongesAdmin(); break;
+      case 'stagiaire-accueil':    renderPageStagiaireAccueil(); break;
+      case 'stagiaire-emargement': renderPageStagiaireEmargement(); break;
+      case 'stagiaire-planning':   renderPageStagiairePlanning(); break;
+      case 'connexions-stagiaires':renderPageConnexionsStagiaires(); break;
       default:
         if (main) main.innerHTML = `<div class="page-header"><div class="page-header-left"><h2>⚠️ Page inconnue : ${pageId}</h2></div></div>`;
     }
@@ -2736,9 +2799,10 @@ function renderPageStagiaires(filterPromo='', search='') {
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header-left"><h2>🎓 Stagiaires</h2><p>${store.stagiaires().filter(s=>s.statut==='actif').length} actif(s)</p></div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" id="stag-promos">🏷️ Gérer les promos</button>
         <button class="btn btn-ghost btn-sm" id="stag-import">📥 Import CSV</button>
+        <button class="btn btn-ghost btn-sm" id="stag-gen-acces">🔑 Générer les accès</button>
         <button class="btn btn-primary btn-sm" id="stag-add">＋ Ajouter</button>
       </div>
     </div>
@@ -2753,7 +2817,7 @@ function renderPageStagiaires(filterPromo='', search='') {
       </div>
       <div class="card">
         <div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Nom</th><th>Prénom</th><th>Promotion</th><th>Entreprise alternance</th><th>Statut</th><th>Actions</th></tr></thead>
+          <thead><tr><th>#</th><th>Nom</th><th>Prénom</th><th>Promotion</th><th>Entreprise alternance</th><th>Statut</th><th>Accès portail</th><th>Actions</th></tr></thead>
           <tbody id="stag-tbody"></tbody>
         </table></div>
       </div>
@@ -2763,7 +2827,7 @@ function renderPageStagiaires(filterPromo='', search='') {
   const tbody = document.getElementById('stag-tbody');
   if (tbody) {
     if (stagiaires.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text3)">Aucun stagiaire${filterPromo?' pour cette promotion':''}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text3)">Aucun stagiaire${filterPromo?' pour cette promotion':''}</td></tr>`;
     } else {
       stagiaires.forEach((s, i) => {
         const tr = document.createElement('tr');
@@ -2774,6 +2838,7 @@ function renderPageStagiaires(filterPromo='', search='') {
           <td>${promoBadge(s.promotion)}</td>
           <td class="text-xs text-muted">${s.entreprise||'—'}</td>
           <td><span class="badge ${s.statut==='actif'?'badge-green':'badge-gray'}">${s.statut==='actif'?'Actif':'Inactif'}</span></td>
+          <td>${s.userId ? '<span class="badge badge-green">✅ Actif</span>' : '<span class="badge badge-gray">— Aucun</span>'}</td>
           <td>
             <button class="btn btn-ghost btn-xs stag-edit" data-id="${s.id}">✏️</button>
             <button class="btn btn-ghost btn-xs stag-toggle" data-id="${s.id}" data-statut="${s.statut}">
@@ -2794,6 +2859,7 @@ function renderPageStagiaires(filterPromo='', search='') {
   });
   document.getElementById('stag-add')?.addEventListener('click', () => showModalAddStagiaire());
   document.getElementById('stag-promos')?.addEventListener('click', () => showModalGererPromos());
+  document.getElementById('stag-gen-acces')?.addEventListener('click', () => genererAccesStagiaires(filterPromo, search));
   document.getElementById('stag-import')?.addEventListener('click', () => document.getElementById('stag-import-file')?.click());
   document.getElementById('stag-import-file')?.addEventListener('change', importStagiairesCSV);
   document.querySelectorAll('.stag-edit').forEach(btn => btn.addEventListener('click', () => showModalEditStagiaire(btn.getAttribute('data-id'))));
@@ -2810,6 +2876,72 @@ function renderPageStagiaires(filterPromo='', search='') {
     store.addAudit({ action:'STAGIAIRE_DELETE', userId:currentUser.id, detail:`Stagiaire supprimé : ${s.prenom} ${s.nom} (${s.promotion})` });
     toast('Stagiaire supprimé.','success'); renderPageStagiaires(filterPromo, search);
   }));
+}
+
+// ─── PORTAIL APPRENTIS : génération en masse des accès de connexion ──────────
+// Slug d'identifiant : minuscules, accents normalisés, uniquement lettres/points.
+function slugUsername(str) {
+  return (str||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z]/g,'');
+}
+function genUniqueUsername(prenom, nom, taken) {
+  const base = `${slugUsername(prenom)}.${slugUsername((nom||'').split(' ')[0])}`;
+  let username = base, n = 2;
+  while (taken.has(username)) { username = `${base}${n}`; n++; }
+  taken.add(username);
+  return username;
+}
+
+async function genererAccesStagiaires(filterPromo='', search='') {
+  const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && !s.userId);
+  if (stagiaires.length === 0) { toast('Tous les stagiaires actifs ont déjà un accès (ou aucun stagiaire actif).', 'info'); return; }
+  if (!confirm(`Générer un accès de connexion (identifiant + mot de passe) pour ${stagiaires.length} apprenti(s) sans compte ?\n\nLes identifiants seront affichés une seule fois — pensez à les exporter avant de fermer.`)) return;
+
+  const users = store.users();
+  const taken = new Set(users.map(u => u.username));
+  const stags = store.stagiaires();
+  const credentials = [];
+
+  for (const s of stagiaires) {
+    const username = genUniqueUsername(s.prenom, s.nom, taken);
+    const tempPwd = generateTempPassword();
+    const hash = await hashPassword(tempPwd);
+    const userId = uid();
+    users.push({
+      id: userId, username, password: hash,
+      prenom: s.prenom, nom: s.nom,
+      role: ROLES.STAGIAIRE, service: s.promotion,
+      statut: 'actif', firstLogin: true, createdAt: now(),
+      stagiaireId: s.id,
+    });
+    const si = stags.findIndex(x => x.id === s.id);
+    if (si >= 0) stags[si].userId = userId;
+    credentials.push({ prenom: s.prenom, nom: s.nom, promotion: s.promotion, username, tempPwd });
+  }
+  store.saveUsers(users);
+  store.saveStagiaires(stags);
+  store.addAudit({ action:'STAGIAIRES_ACCES_GENERES', userId:currentUser.id, detail:`${credentials.length} accès apprentis créés` });
+  store.addNotif({ type:'info', message:`${credentials.length} accès apprentis créés — identifiants à distribuer individuellement (voir export).` });
+
+  openModal(`🔑 ${credentials.length} accès créé(s)`, `
+    <p class="text-xs text-muted" style="margin-bottom:10px">⚠️ Ces mots de passe temporaires ne seront plus affichés ensuite. Exportez la liste puis distribuez chaque identifiant individuellement et en privé (jamais par un canal collectif).</p>
+    <div class="table-wrap" style="max-height:360px"><table>
+      <thead><tr><th>Apprenti</th><th>Promotion</th><th>Identifiant</th><th>Mot de passe</th></tr></thead>
+      <tbody>${credentials.map(c => `<tr>
+        <td class="td-bold">${esc(c.prenom)} ${esc(c.nom)}</td>
+        <td>${promoBadge(c.promotion)}</td>
+        <td><code>${esc(c.username)}</code></td>
+        <td><code>${esc(c.tempPwd)}</code></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`,
+    [
+      { label:'Fermer', cls:'btn-ghost', action: () => { closeModal(); renderPageStagiaires(filterPromo, search); } },
+      { label:'📥 Télécharger CSV', cls:'btn-primary', action: () => {
+        downloadCSV([
+          ['Prénom','Nom','Promotion','Identifiant','Mot de passe temporaire'],
+          ...credentials.map(c => [c.prenom, c.nom, c.promotion, c.username, c.tempPwd]),
+        ], `acces_apprentis_${dateStr(new Date())}.csv`);
+      }},
+    ], true);
 }
 
 function showModalGererPromos() {
@@ -3098,11 +3230,14 @@ function exportPointagesCSV(date) {
 
 // ─── PAGE: UTILISATEURS ───────────────────────────────────────────────────────
 function renderPageUtilisateurs() {
-  const users = store.users();
+  // Les comptes apprentis (rôle stagiaire) sont gérés depuis la page Stagiaires
+  // (génération en masse liée à la fiche apprenti) — on ne les affiche pas ici
+  // pour ne pas noyer la liste des comptes admin/formateurs/collaborateurs.
+  const users = store.users().filter(u => u.role !== ROLES.STAGIAIRE);
   const main = document.getElementById('main-content');
   main.innerHTML = `
     <div class="page-header">
-      <div class="page-header-left"><h2>👥 Utilisateurs</h2><p>${users.length} compte(s)</p></div>
+      <div class="page-header-left"><h2>👥 Utilisateurs</h2><p>${users.length} compte(s) · ${store.users().filter(u=>u.role===ROLES.STAGIAIRE).length} accès apprentis (voir page Stagiaires)</p></div>
       <button class="btn btn-primary btn-sm" id="usr-add">＋ Créer un compte</button>
     </div>
     <div class="page-body">
@@ -4014,6 +4149,243 @@ function showModalNewAbsence() {
   }, 80);
 }
 
+// Création directe d'une absence par l'admin (sans passer par une demande) —
+// utile quand l'info arrive par un autre canal (appel, message) et doit être
+// enregistrée immédiatement, avec statut "approuvé" d'emblée.
+function showModalNewAbsenceAdmin() {
+  const today = dateStr(new Date());
+  const candidats = store.users().filter(u => u.statut === 'actif' && (u.role === ROLES.COLLAB || u.role === ROLES.FORMATEUR));
+  if (candidats.length === 0) { toast('Aucun collaborateur ou formateur actif.', 'warning'); return; }
+  openModal('➕ Nouvelle absence (admin)', `
+    <div class="form-group"><label>Collaborateur / formateur *</label>
+      <select id="abs-a-user" class="form-control">
+        ${candidats.map(u => `<option value="${u.id}">${esc(u.prenom)} ${esc(u.nom)} — ${ROLE_LABELS[u.role]||u.role}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group"><label>Type *</label>
+      <select id="abs-a-type" class="form-control">
+        ${Object.entries(ABSENCE_TYPES).map(([k,v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Date début *</label>
+        <input id="abs-a-deb" type="date" class="form-control" value="${today}">
+      </div>
+      <div class="form-group"><label>Date fin *</label>
+        <input id="abs-a-fin" type="date" class="form-control" value="${today}">
+      </div>
+    </div>
+    <div id="abs-a-info" class="alert alert-info" style="display:none"></div>
+    <div class="form-group"><label>Commentaire</label>
+      <input id="abs-a-comment" class="form-control" placeholder="Motif, précision…">
+    </div>
+    <div id="abs-a-err" style="display:none"></div>`,
+    [
+      { label:'Annuler', cls:'btn-ghost', action: closeModal },
+      { label:'✅ Créer (approuvée)', cls:'btn-primary', action: () => {
+        const userId  = document.getElementById('abs-a-user')?.value;
+        const type    = document.getElementById('abs-a-type')?.value;
+        const debut   = document.getElementById('abs-a-deb')?.value;
+        const fin     = document.getElementById('abs-a-fin')?.value;
+        const comment = document.getElementById('abs-a-comment')?.value?.trim()||'';
+        const err     = document.getElementById('abs-a-err');
+        if (!userId || !debut || !fin) { showAlert(err,'⚠️ Champs obligatoires manquants.','danger'); return; }
+        if (debut > fin) { showAlert(err,'⚠️ Date début > date fin.','danger'); return; }
+        const jours = joursOuvrablesBetween(debut, fin);
+        const u = store.users().find(x => x.id === userId);
+        const absences = store.absences();
+        absences.push({ id:uid(), userId, type, dateDebut:debut, dateFin:fin,
+          joursOuvrables:jours, commentaire:comment, statut:'approuve',
+          updatedBy:currentUser.id, createdByAdmin:true, createdAt:now(), updatedAt:now() });
+        store.saveAbsences(absences);
+        store.addAudit({ action:'ABSENCE_CREE_ADMIN', userId:currentUser.id,
+          detail:`${ABSENCE_TYPES[type]?.label} pour ${u?u.prenom+' '+u.nom:userId} du ${debut} au ${fin} (${jours} j)` });
+        store.addNotif({ type: type==='cp'||type==='maladie'?'conge_approuve':'info', userId,
+          message:`${ABSENCE_TYPES[type]?.label} enregistrée par l'administration du ${debut} au ${fin} (${jours} j)` });
+        closeModal(); toast('Absence créée et approuvée.','success'); renderPageCongesAdmin();
+      }}
+    ]);
+
+  const updateInfoAdmin = () => {
+    const deb = document.getElementById('abs-a-deb')?.value;
+    const fin = document.getElementById('abs-a-fin')?.value;
+    const userId = document.getElementById('abs-a-user')?.value;
+    const info = document.getElementById('abs-a-info');
+    if (deb && fin && deb <= fin && info) {
+      const j = joursOuvrablesBetween(deb, fin);
+      const solde = userId ? getSoldeComplet(userId) : null;
+      info.style.display = 'flex';
+      info.textContent = `📅 ${j} jour(s) ouvrable(s)${solde ? ' · Solde CP disponible : '+solde.total+' j' : ''}`;
+    }
+  };
+  setTimeout(() => {
+    document.getElementById('abs-a-deb')?.addEventListener('change', updateInfoAdmin);
+    document.getElementById('abs-a-fin')?.addEventListener('change', updateInfoAdmin);
+    document.getElementById('abs-a-user')?.addEventListener('change', updateInfoAdmin);
+    updateInfoAdmin();
+  }, 80);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PORTAIL APPRENTIS — espace restreint pour les comptes role "stagiaire"
+// ═══════════════════════════════════════════════════════════════════════════
+function currentStagiaire() {
+  return currentUser?.stagiaireId ? store.stagiaires().find(s => s.id === currentUser.stagiaireId) : null;
+}
+function renderPageStagiaireFicheIntrouvable() {
+  const main = document.getElementById('main-content');
+  main.innerHTML = `<div class="page-header"><div class="page-header-left"><h2>⚠️ Fiche introuvable</h2></div></div>
+    <div class="page-body"><div class="alert alert-danger">Votre fiche apprenti est introuvable — contactez l'administration.</div></div>`;
+}
+
+function renderPageStagiaireAccueil() {
+  const stag = currentStagiaire();
+  const main = document.getElementById('main-content');
+  if (!stag) { renderPageStagiaireFicheIntrouvable(); return; }
+  const emargs = store.emargements().filter(e => e.promotion === stag.promotion);
+  const total = emargs.length;
+  const present = emargs.filter(e => estComptePresent(getStatut(e, stag.id))).length;
+  const taux = total ? Math.round(present/total*100) : 0;
+  const today = dateStr(new Date());
+  const semCfa = getSemaineCFAActive(today);
+  const prochaine = store.semainesCfa().filter(s => s.promotion === stag.promotion && s.debut > today).sort((a,b) => a.debut.localeCompare(b.debut))[0];
+
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🏠 Bonjour ${esc(stag.prenom)} 👋</h2><p>${promoBadge(stag.promotion)} · ${today}</p></div>
+    </div>
+    <div class="page-body">
+      ${semCfa && semCfa.promotion === stag.promotion
+        ? `<div class="alert alert-success">🎓 Vous êtes en semaine CFA cette semaine${semCfa.theme ? ' — ' + esc(semCfa.theme) : ''}</div>`
+        : `<div class="alert alert-info">🏢 Vous êtes en entreprise cette semaine</div>`}
+      <div class="stats-grid">
+        <div class="stat-card green"><div class="stat-label">Taux de présence</div><div class="stat-value green">${taux}%</div><div class="stat-sub">${present}/${total} session(s)</div></div>
+        <div class="stat-card blue"><div class="stat-label">Entreprise</div><div class="stat-value blue" style="font-size:16px">${esc(stag.entreprise || '—')}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Prochaine semaine CFA</div><div class="stat-value amber" style="font-size:16px">${prochaine ? prochaine.debut : '—'}</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">📋 Mes informations</div></div>
+        <table style="width:100%"><tbody>
+          <tr><td class="text-xs text-muted">Promotion</td><td class="text-sm">${promoBadge(stag.promotion)}</td></tr>
+          <tr><td class="text-xs text-muted">Maître d'apprentissage</td><td class="text-sm">${esc(stag.maitreApprentissage || '—')}</td></tr>
+          <tr><td class="text-xs text-muted">Début de contrat</td><td class="text-sm">${stag.dateDebutContrat || '—'}</td></tr>
+          <tr><td class="text-xs text-muted">Fin de contrat</td><td class="text-sm">${stag.dateFinContrat || '—'}</td></tr>
+        </tbody></table>
+      </div>
+    </div>`;
+}
+
+function renderPageStagiaireEmargement() {
+  const stag = currentStagiaire();
+  const main = document.getElementById('main-content');
+  if (!stag) { renderPageStagiaireFicheIntrouvable(); return; }
+  const emargs = store.emargements().filter(e => e.promotion === stag.promotion)
+    .sort((a,b) => b.date.localeCompare(a.date) || (b.session > a.session ? 1 : -1));
+
+  main.innerHTML = `
+    <div class="page-header"><div class="page-header-left"><h2>✍️ Mon émargement</h2><p>${promoBadge(stag.promotion)} · ${emargs.length} session(s)</p></div></div>
+    <div class="page-body">
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Date</th><th>Session</th><th>Statut</th></tr></thead>
+          <tbody>${emargs.length === 0 ? `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text3)">Aucune session émargée pour l'instant</td></tr>` :
+          emargs.map(e => {
+            const st = getStatut(e, stag.id);
+            const info = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
+            return `<tr>
+              <td class="td-bold">${e.date}</td>
+              <td>${DEMIJOURNEES[e.session]?.icon || ''} ${DEMIJOURNEES[e.session]?.label || e.session}</td>
+              <td><span class="badge ${info.cls}">${info.icon} ${info.label}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
+function renderPageStagiairePlanning() {
+  const stag = currentStagiaire();
+  const main = document.getElementById('main-content');
+  if (!stag) { renderPageStagiaireFicheIntrouvable(); return; }
+  const today = dateStr(new Date());
+  const semaines = store.semainesCfa().filter(s => s.promotion === stag.promotion).sort((a,b) => a.debut.localeCompare(b.debut));
+
+  main.innerHTML = `
+    <div class="page-header"><div class="page-header-left"><h2>🗓️ Mon planning</h2><p>${promoBadge(stag.promotion)} · Semaines CFA</p></div></div>
+    <div class="page-body">
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Début</th><th>Fin</th><th>Thème</th><th></th></tr></thead>
+          <tbody>${semaines.length === 0 ? `<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text3)">Aucune semaine CFA planifiée</td></tr>` :
+          semaines.map(s => `<tr>
+            <td class="td-bold">${s.debut}</td><td>${s.fin}</td><td>${esc(s.theme || '—')}</td>
+            <td>${s.debut <= today && s.fin >= today ? '<span class="badge badge-green">📍 En cours</span>' : s.debut > today ? '<span class="badge badge-blue">À venir</span>' : '<span class="badge badge-gray">Passée</span>'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
+// ─── PAGE: CONNEXIONS APPRENTIS (Admin — traçabilité FOAD Qualiopi) ──────────
+function renderPageConnexionsStagiaires(filterPromo='') {
+  const main = document.getElementById('main-content');
+  const connexions = store.connexions().slice().sort((a,b) => (b.loginAt||'').localeCompare(a.loginAt||''));
+  const stagiaires = store.stagiaires();
+  const stagById = Object.fromEntries(stagiaires.map(s => [s.id, s]));
+  const promotions = store.settings().promotions || [];
+
+  const filtered = filterPromo ? connexions.filter(c => stagById[c.stagiaireId]?.promotion === filterPromo) : connexions;
+  const totalMin = filtered.reduce((sum,c) => sum + (c.dureeMin||0), 0);
+  const distinctStag = new Set(filtered.map(c => c.stagiaireId)).size;
+  const enCours = filtered.filter(c => !c.logoutAt).length;
+
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>📶 Connexions apprentis</h2><p>Traçabilité des connexions au portail apprenti — réforme Qualiopi (FOAD)</p></div>
+      <button class="btn btn-primary btn-sm" id="cnx-export">📥 Export CSV</button>
+    </div>
+    <div class="page-body">
+      <div class="stats-grid">
+        <div class="stat-card blue"><div class="stat-label">Connexions</div><div class="stat-value blue">${filtered.length}</div><div class="stat-sub">${enCours} en cours</div></div>
+        <div class="stat-card green"><div class="stat-label">Apprentis distincts</div><div class="stat-value green">${distinctStag}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Temps cumulé</div><div class="stat-value amber" style="font-size:22px">${formatDuree(totalMin)}</div></div>
+      </div>
+      <div class="filters-bar">
+        <select class="form-control" id="cnx-f-promo" style="max-width:170px">
+          <option value="">Toutes promotions</option>
+          ${promotions.map(p => `<option value="${p}" ${filterPromo===p?'selected':''}>${p}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost btn-sm" id="cnx-apply">Filtrer</button>
+      </div>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Apprenti</th><th>Promotion</th><th>Connexion</th><th>Déconnexion</th><th>Durée</th></tr></thead>
+          <tbody>${filtered.length === 0 ? `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Aucune connexion enregistrée pour l'instant</td></tr>` :
+          filtered.map(c => {
+            const s = stagById[c.stagiaireId];
+            return `<tr>
+              <td class="td-bold">${s ? esc(s.prenom)+' '+esc(s.nom) : '—'}</td>
+              <td>${s ? promoBadge(s.promotion) : '—'}</td>
+              <td class="text-xs">${c.loginAt ? new Date(c.loginAt).toLocaleString('fr-FR') : '—'}</td>
+              <td class="text-xs">${c.logoutAt ? new Date(c.logoutAt).toLocaleString('fr-FR') : '<span class="badge badge-green">🟢 En cours</span>'}</td>
+              <td>${c.dureeMin != null ? formatDuree(c.dureeMin) : '—'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+
+  document.getElementById('cnx-apply')?.addEventListener('click', () =>
+    renderPageConnexionsStagiaires(document.getElementById('cnx-f-promo')?.value || ''));
+  document.getElementById('cnx-export')?.addEventListener('click', () => {
+    downloadCSV([
+      ['Apprenti','Promotion','Connexion','Déconnexion','Durée (min)'],
+      ...filtered.map(c => { const s = stagById[c.stagiaireId]; return [s?`${s.prenom} ${s.nom}`:'', s?.promotion||'', c.loginAt||'', c.logoutAt||'', c.dureeMin ?? '']; }),
+    ], `connexions_apprentis_${dateStr(new Date())}.csv`);
+    toast('Export CSV généré.', 'success');
+  });
+}
+
 // ─── PAGE: PRÉSENCE TEMPS RÉEL (Admin) ───────────────────────────────────────
 function renderPagePresenceRT() {
   const today = dateStr(new Date());
@@ -4175,7 +4547,10 @@ function renderPageCongesAdmin(filterStatut='', filterType='') {
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header-left"><h2>🌴 Congés & absences</h2><p>${store.absences().length} demande(s) au total</p></div>
-      <button class="btn btn-ghost btn-sm" id="abs-export">📥 Export CSV</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" id="abs-new-admin">➕ Nouvelle absence</button>
+        <button class="btn btn-ghost btn-sm" id="abs-export">📥 Export CSV</button>
+      </div>
     </div>
     <div class="page-body">
       <div class="stats-grid">
@@ -4225,6 +4600,7 @@ function renderPageCongesAdmin(filterStatut='', filterType='') {
   document.getElementById('abs-apply')?.addEventListener('click', () =>
     renderPageCongesAdmin(document.getElementById('abs-f-statut')?.value||'', document.getElementById('abs-f-type')?.value||''));
   document.getElementById('abs-export')?.addEventListener('click', exportAbsencesCSV);
+  document.getElementById('abs-new-admin')?.addEventListener('click', showModalNewAbsenceAdmin);
 
   // Boutons actions
   absences.forEach(a => {
@@ -6346,6 +6722,7 @@ const SYNC_MAP = [
   { table: 'hys_modules',      sk: 'hys_modules',      label: 'Modules'      },
   { table: 'hys_objectifs',    sk: 'hys_objectifs',    label: 'Objectifs'    },
   { table: 'hys_messages',     sk: 'hys_messages',     label: 'Messagerie'   },
+  { table: 'hys_connexions_stagiaires', sk: 'hys_connexions_stagiaires', label: 'Connexions apprentis' },
 ];
 
 // Pull depuis Supabase → localStorage
@@ -6589,8 +6966,11 @@ create table if not exists hys_users (
   "firstLogin" boolean default true,
   pin text,
   permissions jsonb default '[]',
+  "stagiaireId" text,
   "createdAt" timestamptz default now()
 );
+-- Migration (installation existante) : lien vers la fiche apprenti si compte de type "stagiaire"
+alter table hys_users add column if not exists "stagiaireId" text;
 
 -- Table stagiaires
 create table if not exists hys_stagiaires (
@@ -6601,8 +6981,11 @@ create table if not exists hys_stagiaires (
   "createdAt" timestamptz default now(),
   "dateNaissance" text, email text, telephone text, adresse text,
   "maitreApprentissage" text,
-  "dateDebutContrat" text, "dateFinContrat" text
+  "dateDebutContrat" text, "dateFinContrat" text,
+  "userId" text
 );
+-- Migration (installation existante) : lien vers le compte de connexion (portail apprenti)
+alter table hys_stagiaires add column if not exists "userId" text;
 
 -- Table pointages
 create table if not exists hys_pointages (
@@ -6691,6 +7074,15 @@ create table if not exists hys_settings (
   "updatedAt" timestamptz default now()
 );
 
+-- Table connexions apprentis (traçabilité FOAD — portail apprenti, réforme Qualiopi)
+create table if not exists hys_connexions_stagiaires (
+  id text primary key,
+  "stagiaireId" text, "userId" text,
+  "loginAt" text, "logoutAt" text,
+  "dureeMin" numeric,
+  "createdAt" timestamptz default now()
+);
+
 -- RLS : désactivé pour commencer (activer après tests)
 -- alter table hys_users enable row level security;
 
@@ -6699,6 +7091,7 @@ create index if not exists idx_pointages_user_date on hys_pointages("userId", da
 create index if not exists idx_absences_user on hys_absences("userId");
 create index if not exists idx_emargements_date on hys_emargements(date);
 create index if not exists idx_audit_ts on hys_audit(ts desc);
+create index if not exists idx_connexions_stagiaire on hys_connexions_stagiaires("stagiaireId");
 
 -- ✅ Tables créées — retournez dans HYS PointPro → Paramètres → Supabase
 --    et cliquez "Envoyer tout vers Supabase"
