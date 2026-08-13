@@ -3879,6 +3879,7 @@ getNavPages = function() {
         { id:'planning-rotation', label:'Planning rotation', icon:'🔄' },
         { id:'rapport-mensuel',label:'Rapport mensuel',     icon:'📊' },
         { id:'calendrier-planning',label:'Calendrier planning', icon:'📅' },
+        { id:'rapport-qualiopi',label:'Rapport Qualiopi',   icon:'🏛️' },
       );
     }
   }
@@ -3892,6 +3893,7 @@ navigateTo = function(pageId) {
     'presence-rt':      renderPagePresenceRT,
     'planning-rotation':renderPagePlanningRotation,
     'rapport-mensuel':  renderPageRapportMensuel,
+    'rapport-qualiopi': renderPageRapportQualiopi,
     'calendrier-planning': renderPageCalendrierPlanning,
     'dashboard-dg':     renderPageDashboardDG,
     'objectifs':        renderPageObjectifs,
@@ -4803,6 +4805,35 @@ function _rotMondayOf(d) {
   return dateStr(m);
 }
 
+// Sélection par glisser-clic : maintenir le clic et faire glisser sur plusieurs
+// jours d'une même ligne pour marquer une absence sur toute la période en un
+// coup, au lieu de cliquer case par case. Écouteur global posé une seule fois
+// (pas à chaque rendu de page) pour éviter d'empiler des handlers en double.
+let _rotDragStart = null;
+let _rotDragCurrent = null;
+function _rotClearDragHighlight() {
+  document.querySelectorAll('.rot-cell.rot-drag').forEach(td => td.classList.remove('rot-drag'));
+}
+function _rotUpdateDragHighlight() {
+  _rotClearDragHighlight();
+  if (!_rotDragStart) return;
+  const lo = _rotDragStart.date <= _rotDragCurrent ? _rotDragStart.date : _rotDragCurrent;
+  const hi = _rotDragStart.date <= _rotDragCurrent ? _rotDragCurrent : _rotDragStart.date;
+  document.querySelectorAll(`.rot-cell[data-uid="${_rotDragStart.uid}"]`).forEach(td => {
+    const d = td.getAttribute('data-date');
+    if (d >= lo && d <= hi) td.classList.add('rot-drag');
+  });
+}
+document.addEventListener('mouseup', () => {
+  if (!_rotDragStart) return;
+  const uid = _rotDragStart.uid;
+  const lo = _rotDragStart.date <= _rotDragCurrent ? _rotDragStart.date : _rotDragCurrent;
+  const hi = _rotDragStart.date <= _rotDragCurrent ? _rotDragCurrent : _rotDragStart.date;
+  _rotDragStart = null; _rotDragCurrent = null;
+  _rotClearDragHighlight();
+  if (document.querySelector(`.rot-cell[data-uid="${uid}"]`)) showModalPlanningCell(uid, lo, hi);
+});
+
 function renderPagePlanningRotation(mode, ref) {
   const today = new Date();
   const todayStr = dateStr(today);
@@ -4865,7 +4896,8 @@ function renderPagePlanningRotation(mode, ref) {
   main.innerHTML = `
     <style>
       .rot-wrap{overflow-x:auto}
-      .rot-table{border-collapse:separate;border-spacing:3px;width:max-content}
+      .rot-table{border-collapse:separate;border-spacing:3px;width:max-content;user-select:none}
+      .rot-cell.rot-drag{background:#dbeafe!important;border-color:#93c5fd!important}
       .rot-table th{font-size:10px;color:var(--text3);text-transform:uppercase;padding:2px 3px;text-align:center;white-space:nowrap;font-weight:700}
       .rot-name-h,.rot-name{position:sticky;left:0;background:var(--bg2);z-index:2}
       .rot-name{font-weight:700;font-size:12.5px;padding:6px 12px;white-space:nowrap;border-right:1px solid var(--border);text-align:left}
@@ -4881,7 +4913,7 @@ function renderPagePlanningRotation(mode, ref) {
       @media(max-width:640px){.rot-cell{width:24px;height:24px;min-width:24px;font-size:11px}}
     </style>
     <div class="page-header">
-      <div class="page-header-left"><h2>🔄 Planning rotation</h2><p>${periodeLabel} · cliquez une case pour marquer une absence</p></div>
+      <div class="page-header-left"><h2>🔄 Planning rotation</h2><p>${periodeLabel} · cliquez une case (ou glissez sur plusieurs jours) pour marquer une absence</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="rot-new">➕ Nouvelle absence</button>
         <button class="btn btn-ghost btn-sm" id="rot-export">📥 Export CSV</button>
@@ -4970,24 +5002,37 @@ function renderPagePlanningRotation(mode, ref) {
     else renderPagePlanningRotation('mois', `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`);
   });
   document.querySelectorAll('.rot-cell[data-uid]').forEach(td => {
-    td.addEventListener('click', () => showModalPlanningCell(td.getAttribute('data-uid'), td.getAttribute('data-date')));
+    td.addEventListener('mousedown', e => {
+      e.preventDefault();
+      _rotDragStart = { uid: td.getAttribute('data-uid'), date: td.getAttribute('data-date') };
+      _rotDragCurrent = _rotDragStart.date;
+      _rotUpdateDragHighlight();
+    });
+    td.addEventListener('mouseenter', () => {
+      if (!_rotDragStart || td.getAttribute('data-uid') !== _rotDragStart.uid) return;
+      _rotDragCurrent = td.getAttribute('data-date');
+      _rotUpdateDragHighlight();
+    });
   });
 }
 
 // Ouvre un petit formulaire pour marquer/modifier/supprimer l'absence d'un
-// collaborateur à une date donnée, cliqué directement depuis la grille.
-function showModalPlanningCell(userId, ds) {
+// collaborateur sur une date (ou une plage, si sélectionnée par glisser-clic
+// depuis la grille) — endDs par défaut = ds pour un simple clic sur un jour.
+function showModalPlanningCell(userId, ds, endDs) {
+  endDs = endDs || ds;
   const u = store.users().find(x => x.id === userId); if (!u) return;
-  const existantes = store.absences().filter(a => a.userId===userId && a.statut==='approuve' && a.dateDebut<=ds && a.dateFin>=ds);
+  const existantes = store.absences().filter(a => a.userId===userId && a.statut==='approuve' && a.dateDebut<=endDs && a.dateFin>=ds);
   const ouvrable = isJourOuvrable(ds);
-  openModal(`${esc(u.prenom)} ${esc(u.nom)} — ${ds}`, `
+  const periodeLabel = ds === endDs ? ds : `du ${ds} au ${endDs}`;
+  openModal(`${esc(u.prenom)} ${esc(u.nom)} — ${periodeLabel}`, `
     ${existantes.length ? existantes.map(a => {
       const info = ABSENCE_TYPES[a.type] || ABSENCE_TYPES.absence;
       return `<div class="alert alert-info" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
         <span>${info.icon} ${info.label} — du ${a.dateDebut} au ${a.dateFin}</span>
         <button class="btn btn-danger btn-xs rot-del-abs" data-id="${a.id}">🗑 Supprimer</button>
       </div>`;
-    }).join('') : `<p class="text-muted text-xs" style="margin-bottom:10px">${ouvrable?'Aucune absence enregistrée ce jour — considéré présent.':'Jour non ouvrable (week-end/férié).'}</p>`}
+    }).join('') : `<p class="text-muted text-xs" style="margin-bottom:10px">${ds===endDs && !ouvrable?'Jour non ouvrable (week-end/férié).':'Aucune absence enregistrée sur cette période — considéré présent.'}</p>`}
     <div class="form-group"><label>Marquer une absence</label>
       <select id="rot-type" class="form-control">
         ${Object.entries(ABSENCE_TYPES).map(([k,v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('')}
@@ -4995,7 +5040,7 @@ function showModalPlanningCell(userId, ds) {
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div class="form-group"><label>Du</label><input id="rot-deb" type="date" class="form-control" value="${ds}"></div>
-      <div class="form-group"><label>Au</label><input id="rot-fin" type="date" class="form-control" value="${ds}"></div>
+      <div class="form-group"><label>Au</label><input id="rot-fin" type="date" class="form-control" value="${endDs}"></div>
     </div>
     <div id="rot-info" class="alert alert-info" style="display:none"></div>
     <div class="form-group"><label>Commentaire</label><input id="rot-comment" class="form-control" placeholder="Motif, précision…"></div>
@@ -5387,6 +5432,226 @@ function renderPageCalendrierPlanning(filterMonth='', filterUser=null) {
     }
     if (await downloadXLSX(sheets, `calendrier_${ym}.xlsx`)) toast('Calendrier exporté en Excel.','success');
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PAGE: RAPPORT QUALIOPI CONSOLIDÉ (Admin)
+//  Bilan combiné — présence, absences, émargements signés et connexions FOAD
+//  des apprentis — sur une période donnée, pensé pour être joint à un dossier
+//  de preuve lors d'un audit Qualiopi.
+// ═══════════════════════════════════════════════════════════════════════════
+function renderPageRapportQualiopi(filterMonth='') {
+  const today2 = new Date();
+  const ym = filterMonth || `${today2.getFullYear()}-${String(today2.getMonth()+1).padStart(2,'0')}`;
+  const [year, month] = ym.split('-').map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const days = Array.from({length:daysInMonth}, (_,i) => `${ym}-${String(i+1).padStart(2,'0')}`);
+  const joursOuvrablesMois = days.filter(d => isJourOuvrable(d)).length;
+
+  const collabs = store.users().filter(u => u.role === ROLES.COLLAB && u.statut === 'actif');
+  const stagiaires = store.stagiaires();
+
+  const emargsMois = store.emargements().filter(e => e.date && e.date.startsWith(ym));
+  const emargsSignesMois = emargsMois.filter(e => e.signatureFormateur).length;
+
+  const absencesMois = store.absences().filter(a => a.statut === 'approuve' && days.some(ds => a.dateDebut<=ds && a.dateFin>=ds));
+  const joursAbsenceMois = absencesMois.reduce((acc,a) => acc + days.filter(ds => a.dateDebut<=ds && a.dateFin>=ds).length, 0);
+
+  const connexionsMois = store.connexions().filter(c => (c.loginAt||'').slice(0,7) === ym);
+  const tempsFOADTotal = connexionsMois.reduce((a,c) => a+(c.dureeMin||0), 0);
+  const apprentisDistincts = new Set(connexionsMois.map(c=>c.stagiaireId)).size;
+
+  // Taux de présence moyen équipe sur les jours ouvrables déjà passés de la période
+  // (exclut les collaborateurs en absence approuvée du dénominateur, comme sur les
+  // autres pages — sinon un jour très absent fait chuter artificiellement le taux).
+  const todayStr2 = dateStr(today2);
+  let sommeTaux = 0, nbJoursCalcules = 0;
+  days.filter(d => d <= todayStr2 && isJourOuvrable(d)).forEach(d => {
+    const actifs = collabs.filter(u => !isAbsentDate(u.id, d));
+    if (actifs.length === 0) return;
+    const presents = actifs.filter(u => getPointagesUserDay(u.id, d).length > 0).length;
+    sommeTaux += presents / actifs.length * 100; nbJoursCalcules++;
+  });
+  const tauxPresenceMoyen = nbJoursCalcules > 0 ? Math.round(sommeTaux / nbJoursCalcules) : 0;
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🏛️ Rapport Qualiopi</h2><p>Bilan consolidé — ${MOIS[month-1]} ${year} · pour dossier d'audit</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="rq-xlsx">📊 Export Excel consolidé</button>
+        <button class="btn btn-ghost btn-sm" id="rq-pdf">🖨 Synthèse PDF</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar">
+        <input type="month" class="form-control" id="rq-month" value="${ym}" style="max-width:180px">
+        <button class="btn btn-ghost btn-sm" id="rq-apply">Voir</button>
+      </div>
+      <div class="alert alert-info">📋 Combine présence, absences, émargements signés et connexions FOAD des apprentis sur la période — utile pour constituer un dossier de preuve lors d'un audit Qualiopi (traçabilité des actions de formation, notamment à distance).</div>
+      <div class="stats-grid">
+        <div class="stat-card blue"><div class="stat-label">Taux de présence moyen</div><div class="stat-value blue">${tauxPresenceMoyen}%</div><div class="stat-sub">${joursOuvrablesMois} jour(s) ouvrable(s)</div></div>
+        <div class="stat-card ${emargsSignesMois<emargsMois.length?'amber':'green'}"><div class="stat-label">Émargements signés</div><div class="stat-value ${emargsSignesMois<emargsMois.length?'amber':'green'}">${emargsSignesMois}<span style="font-size:14px;color:var(--text3)">/${emargsMois.length}</span></div></div>
+        <div class="stat-card amber"><div class="stat-label">Jours d'absence (équipe)</div><div class="stat-value amber">${joursAbsenceMois}</div></div>
+        <div class="stat-card teal"><div class="stat-label">Connexions apprentis (FOAD)</div><div class="stat-value teal">${connexionsMois.length}</div><div class="stat-sub">${apprentisDistincts} apprenti(s) · ${formatDuree(tempsFOADTotal)} cumulé</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">✍️ Émargements — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Date</th><th>Session</th><th>Promotion</th><th>Statut</th><th>Signé le</th></tr></thead>
+          <tbody>${emargsMois.length === 0 ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Aucun émargement ce mois</td></tr>` :
+            emargsMois.slice().sort((a,b)=>a.date.localeCompare(b.date)).map(e => `<tr>
+              <td>${e.date}</td>
+              <td>${DEMIJOURNEES[e.session]?.label||e.session}</td>
+              <td>${promoBadge(e.promotion)}</td>
+              <td><span class="badge ${e.signatureFormateur?'badge-green':'badge-red'}">${e.signatureFormateur?'✅ Signé':'❌ Non signé'}</span></td>
+              <td class="text-xs">${e.signedAt ? new Date(e.signedAt).toLocaleString('fr-FR') : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🎒 Connexions apprentis (FOAD) — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Apprenti</th><th>Promotion</th><th>Connexion</th><th>Durée</th></tr></thead>
+          <tbody>${connexionsMois.length === 0 ? `<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text3)">Aucune connexion ce mois</td></tr>` :
+            connexionsMois.slice().sort((a,b)=>(b.loginAt||'').localeCompare(a.loginAt||'')).map(c => {
+              const s = stagiaires.find(x => x.id === c.stagiaireId);
+              return `<tr>
+                <td class="td-bold">${s ? esc(s.prenom)+' '+esc(s.nom) : '—'}</td>
+                <td>${s ? promoBadge(s.promotion) : '—'}</td>
+                <td class="text-xs">${c.loginAt ? new Date(c.loginAt).toLocaleString('fr-FR') : '—'}</td>
+                <td>${c.dureeMin != null ? formatDuree(c.dureeMin) : '—'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🌴 Absences — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Collaborateur</th><th>Type</th><th>Du</th><th>Au</th><th>J.Ouv.</th></tr></thead>
+          <tbody>${absencesMois.length === 0 ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Aucune absence ce mois</td></tr>` :
+            absencesMois.slice().sort((a,b)=>a.dateDebut.localeCompare(b.dateDebut)).map(a => {
+              const u = store.users().find(x => x.id === a.userId);
+              const info = ABSENCE_TYPES[a.type] || ABSENCE_TYPES.absence;
+              return `<tr>
+                <td class="td-bold">${u ? esc(u.prenom)+' '+esc(u.nom) : '—'}</td>
+                <td><span class="badge ${info.badge}">${info.icon} ${info.label}</span></td>
+                <td>${a.dateDebut}</td><td>${a.dateFin}</td><td>${a.joursOuvrables}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    </div>`;
+
+  document.getElementById('rq-apply')?.addEventListener('click', () =>
+    renderPageRapportQualiopi(document.getElementById('rq-month')?.value || ''));
+  document.getElementById('rq-xlsx')?.addEventListener('click', () =>
+    exportRapportQualiopiXLSX(ym, collabs, days, emargsMois, absencesMois, connexionsMois, stagiaires));
+  document.getElementById('rq-pdf')?.addEventListener('click', () =>
+    generatePDFRapportQualiopi(ym, { tauxPresenceMoyen, emargsSignesMois, emargsTotal: emargsMois.length, joursAbsenceMois, connexionsCount: connexionsMois.length, apprentisDistincts, tempsFOADTotal }));
+}
+
+async function exportRapportQualiopiXLSX(ym, collabs, days, emargsMois, absencesMois, connexionsMois, stagiaires) {
+  const [year, month] = ym.split('-').map(Number);
+  const joursOuvrablesMois = days.filter(d => isJourOuvrable(d)).length;
+
+  const s1 = [
+    [`Rapport Qualiopi consolidé — ${MOIS[month-1]} ${year}`],
+    [`HYS Consulting · Organisme de formation Qualiopi · Mayotte`],
+    [`Généré le ${new Date().toLocaleString('fr-FR')} par ${currentUser.prenom} ${currentUser.nom}`],
+    [],
+    ['Indicateur', 'Valeur'],
+    ['Jours ouvrables du mois', joursOuvrablesMois],
+    ['Émargements attendus', emargsMois.length],
+    ['Émargements signés', emargsMois.filter(e => e.signatureFormateur).length],
+    ["Jours d'absence (équipe)", absencesMois.reduce((a,b) => a + days.filter(ds => b.dateDebut<=ds && b.dateFin>=ds).length, 0)],
+    ['Connexions apprentis (FOAD)', connexionsMois.length],
+    ['Apprentis distincts connectés', new Set(connexionsMois.map(c=>c.stagiaireId)).size],
+    ['Temps cumulé connexions FOAD (min)', connexionsMois.reduce((a,c) => a+(c.dureeMin||0), 0)],
+  ];
+
+  const s2 = [[`Présence collaborateurs — ${MOIS[month-1]} ${year}`], [], ['Collaborateur','Fonction','Jours pointés','Prévu (h)','Effectué (h)','Écart (h)','Absences (j)']];
+  collabs.forEach(u => {
+    const joursPointes = days.filter(d => calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)) > 0).length;
+    const totalMin = days.reduce((a,d) => a + calcHeuresJour(getPointagesUserDay(u.id,d).sort((x,y)=>x.timestamp-y.timestamp)), 0);
+    const prevuMin = days.reduce((a,d) => a + heuresPrevuesJour(u.id, d), 0);
+    const absMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && days.some(ds => a.dateDebut<=ds && a.dateFin>=ds));
+    const joursAbs = absMois.reduce((a,b) => a + days.filter(ds => b.dateDebut<=ds && b.dateFin>=ds).length, 0);
+    s2.push([`${u.prenom} ${u.nom}`, u.service||'', joursPointes, min2h(prevuMin), min2h(totalMin), min2h(totalMin-prevuMin), joursAbs]);
+  });
+
+  const s3 = [[`Émargements — ${MOIS[month-1]} ${year}`], [], ['Date','Session','Promotion','Signé','Signé le']];
+  emargsMois.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e => {
+    s3.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion, e.signatureFormateur?'Oui':'Non', e.signedAt ? new Date(e.signedAt).toLocaleString('fr-FR') : '']);
+  });
+
+  const s4 = [[`Connexions apprentis (FOAD) — ${MOIS[month-1]} ${year}`], [], ['Apprenti','Promotion','Connexion','Déconnexion','Durée (min)']];
+  connexionsMois.slice().sort((a,b)=>(a.loginAt||'').localeCompare(b.loginAt||'')).forEach(c => {
+    const s = stagiaires.find(x => x.id === c.stagiaireId);
+    s4.push([s?`${s.prenom} ${s.nom}`:'', s?.promotion||'', c.loginAt||'', c.logoutAt||'', c.dureeMin ?? '']);
+  });
+
+  const s5 = [[`Absences — ${MOIS[month-1]} ${year}`], [], ['Collaborateur','Type','Du','Au','Jours ouvrables']];
+  absencesMois.slice().sort((a,b)=>a.dateDebut.localeCompare(b.dateDebut)).forEach(a => {
+    const u = store.users().find(x => x.id === a.userId);
+    const info = ABSENCE_TYPES[a.type] || {};
+    s5.push([u?`${u.prenom} ${u.nom}`:'', info.label||a.type, a.dateDebut, a.dateFin, a.joursOuvrables]);
+  });
+
+  const sheets = [
+    { name:'Synthèse', rows:s1, cols:[34,16] },
+    { name:'Présence collaborateurs', rows:s2, cols:[24,22,14,12,12,10,12] },
+    { name:'Émargements', rows:s3, cols:[12,12,14,10,20] },
+    { name:'Connexions FOAD', rows:s4, cols:[22,14,20,20,12] },
+    { name:'Absences', rows:s5, cols:[22,16,12,12,14] },
+  ];
+  if (await downloadXLSX(sheets, `rapport_qualiopi_${ym}.xlsx`)) {
+    store.addAudit({ action:'EXPORT_RAPPORT_QUALIOPI', userId:currentUser.id, detail:`Export Excel consolidé ${ym}` });
+    toast('Rapport Qualiopi exporté en Excel.', 'success');
+  }
+}
+
+async function generatePDFRapportQualiopi(ym, stats) {
+  const [year, month] = ym.split('-').map(Number);
+  toast('Génération PDF…', 'info');
+  try {
+    const { doc, W, M } = await createHYSPDF('Rapport Qualiopi — Synthèse', `${MOIS[month-1]} ${year}`);
+    let y = 40;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(30,30,30);
+    doc.text('Indicateurs de la période', M, y); y += 8;
+    y = pdfHRule(doc, y, W, M); y += 5;
+    const rows = [
+      ['Taux de présence moyen équipe', stats.tauxPresenceMoyen + ' %'],
+      ['Émargements signés', `${stats.emargsSignesMois} / ${stats.emargsTotal}`],
+      ["Jours d'absence (équipe)", stats.joursAbsenceMois + ' j'],
+      ['Connexions apprentis (FOAD)', String(stats.connexionsCount)],
+      ['Apprentis distincts connectés', String(stats.apprentisDistincts)],
+      ['Temps cumulé connexions FOAD', formatDuree(stats.tempsFOADTotal)],
+    ];
+    rows.forEach(([label, val]) => { pdfLabel(doc, label, val, M, y, 85); y += 9; });
+    y += 6;
+    doc.setFont('helvetica','italic'); doc.setFontSize(8); doc.setTextColor(100,100,100);
+    doc.text("Document de synthèse à joindre au dossier de preuve Qualiopi — le détail ligne à ligne", M, y); y += 5;
+    doc.text("(émargements, connexions FOAD, absences) est disponible dans l'export Excel consolidé.", M, y);
+
+    doc.setFillColor(46, 189, 107);
+    doc.rect(0, 290, 210, 7, 'F');
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+    doc.text(`HYS PointPro v${APP_VERSION} · Généré le ${new Date().toLocaleString('fr-FR')} par ${esc(currentUser.prenom)} ${esc(currentUser.nom)}`, M, 295);
+
+    doc.save(`rapport_qualiopi_synthese_${ym}.pdf`);
+    store.addAudit({ action:'PDF_RAPPORT_QUALIOPI', userId:currentUser.id, detail:`Synthèse PDF ${ym}` });
+    toast('Synthèse PDF téléchargée.', 'success');
+  } catch(err) {
+    console.error(err);
+    toast('Erreur PDF : ' + err.message, 'error');
+  }
 }
 
 // ─── SEED COLLABS HYS ─────────────────────────────────────────────────────────
@@ -6503,7 +6768,7 @@ function renderPageDashboardDG() {
   const absentCollabs     = collabs.filter(u => isAbsentAujourdHui(u.id));
   const presentFormateurs = formateurs.filter(u => {
     const pts = getPointagesUserDay(u.id, today);
-    return pts.length > 0 && pts[pts.length-1].type === 'entree';
+    return pts.length > 0 && pts[pts.length-1].type === 'entree' && !isAbsentAujourdHui(u.id);
   });
   const absencesPending = store.absences().filter(a => a.statut === 'en_attente');
   // Émargements attendus = les sessions (matin/après-midi) de la semaine CFA active pour
@@ -6582,9 +6847,11 @@ function renderPageDashboardDG() {
     weeks.push({ label, pct: Math.min(100, totalPres), debut:wStart });
   }
 
-  // ── Répartition absences par type
+  // ── Répartition absences par type (période CP en cours, pas tout l'historique —
+  // sinon le graphique ne fait que grossir indéfiniment et ne reflète plus la réalité actuelle)
+  const periodeCPDebutStr = dateStr(getPeriodeCPDebut());
   const absTypes = {};
-  store.absences().filter(a=>a.statut==='approuve').forEach(a => {
+  store.absences().filter(a=>a.statut==='approuve' && a.dateFin >= periodeCPDebutStr).forEach(a => {
     absTypes[a.type] = (absTypes[a.type]||0) + (a.joursOuvrables||0);
   });
   const totalAbsJ = Object.values(absTypes).reduce((a,b)=>a+b,0);
@@ -6716,7 +6983,7 @@ function renderPageDashboardDG() {
 
         <!-- Répartition absences -->
         <div class="card">
-          <div class="card-header"><div class="card-title">🥧 Absences par type</div></div>
+          <div class="card-header"><div class="card-title">🥧 Absences par type</div><span class="badge badge-hys" style="font-size:10px">Période CP en cours</span></div>
           ${totalAbsJ === 0 ? `<div class="empty-state" style="padding:20px"><div class="icon" style="font-size:24px">✅</div><p style="font-size:12px">Aucune absence approuvée</p></div>` :
           `<div style="display:flex;flex-direction:column;gap:8px">
             ${Object.entries(absTypes).sort((a,b)=>b[1]-a[1]).map(([type, jours]) => {
