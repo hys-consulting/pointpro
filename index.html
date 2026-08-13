@@ -690,7 +690,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
           <svg width="40" height="40" viewBox="0 0 200 200"><use href="#hys-logo"/></svg>
           <div class="brand-text">
             <div class="name"><span class="hys-g">HYS</span> PointPro</div>
-            <div class="version">v2.4 · CFA Apprentissage</div>
+            <div class="version">v2.5 · CFA Apprentissage</div>
           </div>
         </div>
         <button onclick="openSearch()" title="Recherche (Ctrl+K)" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.6);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;margin-top:8px;width:100%;text-align:left;font-family:var(--font)">🔍 Rechercher… <kbd style="float:right;font-size:10px;opacity:.6">Ctrl+K</kbd></button>
@@ -754,7 +754,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
 
 // ─── CONFIG SUPABASE (à modifier si vous utilisez Supabase) ──────────────────
 // Voir Paramètres → Supabase dans l'app pour les instructions
-const APP_VERSION = '2.4';
+const APP_VERSION = '2.5';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 8 * 3600 * 1000;
@@ -1219,7 +1219,7 @@ async function requestBrowserNotifPermission() {
   else if (perm === 'denied') toast('Notifications refusées — réactivez-les dans les réglages du navigateur si besoin.', 'error');
   return perm;
 }
-const NOTIF_ICONS_BROWSER = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯', message:'💬' };
+const NOTIF_ICONS_BROWSER = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯', message:'💬', retard:'⏰' };
 function notifyBrowser(notif) {
   try {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -1233,6 +1233,23 @@ function notifyBrowser(notif) {
     });
     n.onclick = () => { window.focus(); try { navigateTo('notifications'); } catch(e) {} n.close(); };
   } catch(e) { console.warn('[HYS] notifyBrowser:', e); }
+}
+
+// Alerte proactive : notifie l'admin (une seule fois par personne et par jour)
+// dès qu'un retard est détecté, même sans avoir la page Présence RT ouverte.
+let _retardsNotifies = new Set();
+let _retardsNotifiesDate = null;
+function checkRetardsEtNotifier() {
+  if (!isAdmin()) return;
+  const today = dateStr(new Date());
+  if (_retardsNotifiesDate !== today) { _retardsNotifies = new Set(); _retardsNotifiesDate = today; }
+  const issues = getPointageIssuesDuJour();
+  issues.retards.forEach(u => {
+    const key = today + '_' + u.id;
+    if (_retardsNotifies.has(key)) return;
+    _retardsNotifies.add(key);
+    notifyBrowser({ type:'retard', id:'retard_'+key, message:`${esc(u.prenom)} ${esc(u.nom)} n'a pas encore pointé (retard).` });
+  });
 }
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
@@ -1453,7 +1470,6 @@ function getNavPages() {
     { id:'notifications',   label:'Notifications',        icon:'🔔' },
     { id:'messagerie',      label:'Messagerie',           icon:'💬' },
     { section:'GESTION' },
-    { id:'conges-admin',    label:'Congés & absences',  icon:'🌴' },
     { id:'utilisateurs',    label:'Utilisateurs',       icon:'👥' },
     { id:'audit',           label:'Journal d\'audit',   icon:'🛡️' },
     { id:'export',          label:'Export',             icon:'📤' },
@@ -3820,19 +3836,21 @@ function getSoldeComplet(userId) {
   };
 }
 
+// Absence approuvée couvrant une date donnée (généralisation utilisée par le
+// planning de rotation, la présence temps réel et les vérifications du jour).
+function getAbsenceDate(userId, ds) {
+  return store.absences().find(a =>
+    a.userId === userId && a.statut === 'approuve' && a.dateDebut <= ds && a.dateFin >= ds
+  ) || null;
+}
+
 // Vérifier si un collab est absent aujourd'hui
 function isAbsentAujourdHui(userId) {
-  const today = dateStr(new Date());
-  return store.absences().some(a =>
-    a.userId === userId && a.statut === 'approuve' && a.dateDebut <= today && a.dateFin >= today
-  );
+  return !!getAbsenceDate(userId, dateStr(new Date()));
 }
 
 function getAbsenceAujourdHui(userId) {
-  const today = dateStr(new Date());
-  return store.absences().find(a =>
-    a.userId === userId && a.statut === 'approuve' && a.dateDebut <= today && a.dateFin >= today
-  ) || null;
+  return getAbsenceDate(userId, dateStr(new Date()));
 }
 
 // ─── NAVIGATION — PATCH POUR COLLABS ─────────────────────────────────────────
@@ -3858,6 +3876,7 @@ getNavPages = function() {
       pages.splice(expIdx, 0,
         { section:'COLLABORATEURS' },
         { id:'presence-rt',    label:'Présence temps réel', icon:'🟢' },
+        { id:'planning-rotation', label:'Planning rotation', icon:'🔄' },
         { id:'rapport-mensuel',label:'Rapport mensuel',     icon:'📊' },
         { id:'calendrier-planning',label:'Calendrier planning', icon:'📅' },
       );
@@ -3871,6 +3890,7 @@ navigateTo = function(pageId) {
   const collabPages = {
     'pointage-tache':   renderPagePointageTache,
     'presence-rt':      renderPagePresenceRT,
+    'planning-rotation':renderPagePlanningRotation,
     'rapport-mensuel':  renderPageRapportMensuel,
     'calendrier-planning': renderPageCalendrierPlanning,
     'dashboard-dg':     renderPageDashboardDG,
@@ -4389,9 +4409,15 @@ function renderPageConnexionsStagiaires(filterPromo='') {
 // ─── PAGE: PRÉSENCE TEMPS RÉEL (Admin) ───────────────────────────────────────
 function renderPagePresenceRT() {
   const today = dateStr(new Date());
+  const nowRefresh = new Date();
   const users = store.users().filter(u => u.statut === 'actif' && u.role !== ROLES.ADMIN);
   const collabs = users.filter(u => u.role === ROLES.COLLAB);
   const formateurs = users.filter(u => u.role === ROLES.FORMATEUR);
+  const stagById = Object.fromEntries(store.stagiaires().map(s => [s.id, s]));
+  const connexionsJour = store.connexions()
+    .filter(c => (c.loginAt||'').slice(0,10) === today)
+    .sort((a,b) => (b.loginAt||'').localeCompare(a.loginAt||''));
+  const apprentisEnLigne = connexionsJour.filter(c => !c.logoutAt).length;
 
   // Stats
   const presentCollabs = collabs.filter(u => {
@@ -4401,19 +4427,30 @@ function renderPagePresenceRT() {
   const absentCollabs = collabs.filter(u => isAbsentAujourdHui(u.id)).length;
   const pendingAbsences = store.absences().filter(a => a.statut === 'en_attente').length;
   const issues = getPointageIssuesDuJour();
+  const isLive = supa.isConfigured() && navigator.onLine;
 
   const main = document.getElementById('main-content');
   main.innerHTML = `
+    <style>
+      @keyframes prt-livepulse{0%,100%{opacity:1}50%{opacity:.3}}
+      .prt-live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px;animation:prt-livepulse 1.6s ease-in-out infinite;vertical-align:middle}
+      @keyframes prt-alertpulse{0%{box-shadow:0 0 0 0 rgba(217,119,6,.35)}70%{box-shadow:0 0 0 9px rgba(217,119,6,0)}100%{box-shadow:0 0 0 0 rgba(217,119,6,0)}}
+      .prt-alert-pulse{animation:prt-alertpulse 2.2s ease-out infinite;border-left:4px solid var(--amber,#d97706)}
+      .prt-search{max-width:220px}
+    </style>
     <div class="page-header">
       <div class="page-header-left">
         <h2>🟢 Présence temps réel</h2>
-        <p>${today} · Mise à jour à chaque chargement</p>
+        <p>${isLive ? '<span class="prt-live-dot"></span>En direct' : '⬤ Mode local'} · actualisé à ${nowRefresh.toLocaleTimeString('fr-FR')}</p>
       </div>
-      ${pendingAbsences > 0 ? `<button class="btn btn-amber btn-sm" onclick="navigateTo('conges-admin')">⏳ ${pendingAbsences} demande(s) à valider</button>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="prt-export">📥 Export CSV</button>
+        ${pendingAbsences > 0 ? `<button class="btn btn-amber btn-sm" onclick="navigateTo('planning-rotation')">⏳ ${pendingAbsences} demande(s) à valider</button>` : ''}
+      </div>
     </div>
     <div class="page-body">
       ${(issues.retards.length > 0 || issues.oublis.length > 0) ? `
-      <div class="alert alert-warning" style="margin-bottom:16px">
+      <div class="alert alert-warning prt-alert-pulse" style="margin-bottom:16px">
         ${issues.retards.length > 0 ? `⏰ <strong>${issues.retards.length}</strong> collaborateur(s) en retard (pas encore pointé) — ${issues.retards.map(u=>esc(u.prenom)+' '+esc(u.nom)).join(', ')}<br>` : ''}
         ${issues.oublis.length > 0 ? `❓ <strong>${issues.oublis.length}</strong> sortie(s) non pointée(s) — ${issues.oublis.map(u=>esc(u.prenom)+' '+esc(u.nom)).join(', ')}` : ''}
       </div>` : ''}
@@ -4434,6 +4471,11 @@ function renderPagePresenceRT() {
           <div class="stat-value blue">${formateurs.filter(u=>{const pts=getPointagesUserDay(u.id,today);return pts.length>0&&pts[pts.length-1].type==='entree';}).length}</div>
           <div class="stat-sub">sur ${formateurs.length}</div>
         </div>
+        <div class="stat-card teal">
+          <div class="stat-label">Apprentis connectés</div>
+          <div class="stat-value teal">${connexionsJour.length}</div>
+          <div class="stat-sub">${apprentisEnLigne} en ligne actuellement</div>
+        </div>
         <div class="stat-card amber">
           <div class="stat-label">Retards / Oublis</div>
           <div class="stat-value amber">${issues.retards.length + issues.oublis.length}</div>
@@ -4449,11 +4491,14 @@ function renderPagePresenceRT() {
       <!-- Collaborateurs -->
       <div class="card">
         <div class="card-header"><div class="card-title">👥 Collaborateurs HYS Consulting — ${today}</div>
-          <button class="btn btn-ghost btn-sm" onclick="renderPagePresenceRT()">🔄 Actualiser</button>
+          <div style="display:flex;gap:8px">
+            <input type="text" class="form-control prt-search" id="prt-search" placeholder="🔍 Rechercher un nom…">
+            <button class="btn btn-ghost btn-sm" onclick="renderPagePresenceRT()">🔄 Actualiser</button>
+          </div>
         </div>
         <div class="table-wrap"><table>
           <thead><tr><th>Collaborateur</th><th>Fonction</th><th>Statut</th><th>Arrivée</th><th>Heures/jour</th><th>Activité du jour</th><th>Actions</th></tr></thead>
-          <tbody>${collabs.map(u => {
+          <tbody id="prt-collabs-body">${collabs.map(u => {
             const pts = getPointagesUserDay(u.id, today).sort((a,b)=>a.timestamp-b.timestamp);
             const isIn = pts.length > 0 && pts[pts.length-1].type === 'entree';
             const entree = pts.find(p => p.type === 'entree');
@@ -4494,14 +4539,17 @@ function renderPagePresenceRT() {
               statutClass = 'badge-gray';
             }
 
-            return `<tr>
+            return `<tr class="prt-row" data-name="${esc((u.prenom+' '+u.nom).toLowerCase())}">
               <td class="td-bold">${esc(u.prenom)} ${esc(u.nom)}</td>
               <td class="text-xs text-muted">${u.service||'—'}</td>
               <td><span class="badge ${statutClass}">${statut}</span></td>
               <td class="td-mono text-xs">${entree && !absence ? entree.heure.slice(0,5) : '—'}</td>
               <td>${heures > 0 ? `<span class="badge badge-blue">${formatDuree(heures)}</span>` : '—'}</td>
               <td class="text-xs text-muted" style="max-width:160px">${tacheLabel}</td>
-              <td><button class="btn btn-ghost btn-xs presrt-correct" data-uid="${u.id}">✏️ Corriger</button></td>
+              <td style="display:flex;gap:4px">
+                <button class="btn btn-ghost btn-xs presrt-detail" data-uid="${u.id}" title="Détail de la journée">👁</button>
+                <button class="btn btn-ghost btn-xs presrt-correct" data-uid="${u.id}">✏️ Corriger</button>
+              </td>
             </tr>`;
           }).join('')}</tbody>
         </table></div>
@@ -4530,10 +4578,95 @@ function renderPagePresenceRT() {
           }</tbody>
         </table></div>
       </div>
+
+      <!-- Apprentis (connexions FOAD) -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">🎒 Apprentis — connexions du jour</div>
+          <button class="btn btn-ghost btn-sm" onclick="navigateTo('connexions-stagiaires')">Historique complet →</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Apprenti</th><th>Promotion</th><th>Connexion</th><th>Déconnexion</th><th>Durée</th></tr></thead>
+          <tbody>${connexionsJour.length === 0
+            ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Aucune connexion apprenti aujourd'hui</td></tr>`
+            : connexionsJour.map(c => {
+              const s = stagById[c.stagiaireId];
+              return `<tr>
+                <td class="td-bold">${s ? esc(s.prenom)+' '+esc(s.nom) : '—'}</td>
+                <td>${s ? promoBadge(s.promotion) : '—'}</td>
+                <td class="text-xs">${c.loginAt ? new Date(c.loginAt).toLocaleTimeString('fr-FR') : '—'}</td>
+                <td class="text-xs">${c.logoutAt ? new Date(c.logoutAt).toLocaleTimeString('fr-FR') : '<span class="badge badge-green">🟢 En cours</span>'}</td>
+                <td>${c.dureeMin != null ? formatDuree(c.dureeMin) : '—'}</td>
+              </tr>`;
+            }).join('')
+          }</tbody>
+        </table></div>
+      </div>
     </div>`;
   document.querySelectorAll('.presrt-correct').forEach(btn => {
     btn.addEventListener('click', () => showModalCorrection(btn.getAttribute('data-uid'), today));
   });
+  document.querySelectorAll('.presrt-detail').forEach(btn => {
+    btn.addEventListener('click', () => showModalHistoJour(btn.getAttribute('data-uid'), today));
+  });
+  document.getElementById('prt-export')?.addEventListener('click', exportPresenceRTCSV);
+  document.getElementById('prt-search')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#prt-collabs-body .prt-row').forEach(tr => {
+      tr.style.display = !q || tr.getAttribute('data-name').includes(q) ? '' : 'none';
+    });
+  });
+}
+
+// Détail chronologique de la journée d'un collaborateur (pointages + activités) —
+// ouvert depuis Présence temps réel pour éviter de naviguer vers une autre page.
+function showModalHistoJour(userId, ds) {
+  const u = store.users().find(x => x.id === userId); if (!u) return;
+  const pts = getPointagesUserDay(userId, ds).sort((a,b)=>a.timestamp-b.timestamp);
+  const taches = store.taches().filter(t => t.userId===userId && t.date===ds).sort((a,b)=>(a.heureDebut||'').localeCompare(b.heureDebut||''));
+  const heures = calcHeuresJour(pts);
+  const absence = getAbsenceDate(userId, ds);
+  openModal(`👁 ${esc(u.prenom)} ${esc(u.nom)} — ${ds}`, `
+    ${absence ? `<div class="alert alert-info">${ABSENCE_TYPES[absence.type]?.icon||''} ${ABSENCE_TYPES[absence.type]?.label||absence.type} (${absence.dateDebut} → ${absence.dateFin})</div>` : ''}
+    <div class="form-group"><label>Pointages</label>
+      ${pts.length===0 ? '<p class="text-muted text-xs">Aucun pointage ce jour.</p>' :
+        `<div style="display:flex;flex-direction:column;gap:6px">${pts.map(p=>`
+          <div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--bg3);border-radius:var(--radius-xs);border:1px solid var(--border)">
+            <span>${p.type==='entree'?'🟢 Entrée':'🔴 Sortie'}</span>
+            <span class="td-mono">${p.heure?p.heure.slice(0,5):'—'}</span>
+          </div>`).join('')}</div>`}
+      <p class="text-xs text-muted" style="margin-top:8px">Total pointé : <strong>${formatDuree(heures)}</strong></p>
+    </div>
+    <div class="form-group"><label>Activités saisies</label>
+      ${taches.length===0 ? '<p class="text-muted text-xs">Aucune activité saisie.</p>' :
+        `<div style="display:flex;flex-direction:column;gap:6px">${taches.map(t=>`
+          <div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--bg3);border-radius:var(--radius-xs);border:1px solid var(--border)">
+            <span>${TACHE_TYPES[t.type]?.icon||'🔧'} ${TACHE_TYPES[t.type]?.label||t.type}${t.note?' — '+esc(t.note):''}</span>
+            <span class="td-mono">${formatDuree(t.dureeMin||0)}</span>
+          </div>`).join('')}</div>`}
+    </div>`,
+    [
+      { label:'Fermer', cls:'btn-ghost', action: closeModal },
+      { label:'✏️ Corriger le pointage', cls:'btn-amber', action: () => { closeModal(); showModalCorrection(userId, ds); } },
+    ]);
+}
+
+// Export CSV instantané de l'état de présence du jour (photo à l'instant T).
+function exportPresenceRTCSV() {
+  const today = dateStr(new Date());
+  const users = store.users().filter(u => u.statut === 'actif' && u.role !== ROLES.ADMIN);
+  const rows = [['Nom','Fonction','Rôle','Statut','Arrivée','Heures/jour (h)']];
+  users.forEach(u => {
+    const pts = getPointagesUserDay(u.id, today).sort((a,b)=>a.timestamp-b.timestamp);
+    const isIn = pts.length > 0 && pts[pts.length-1].type === 'entree';
+    const entree = pts.find(p => p.type === 'entree');
+    const heures = calcHeuresJour(pts);
+    const absence = getAbsenceDate(u.id, today);
+    const statutLabel = absence ? (ABSENCE_TYPES[absence.type]?.label||'Absence') : (isIn ? 'Présent' : (pts.length>0 ? 'Parti' : 'Non pointé'));
+    rows.push([`${u.prenom} ${u.nom}`, u.service||'', ROLE_LABELS[u.role]||u.role, statutLabel,
+      entree && !absence ? entree.heure.slice(0,5) : '', heures>0 ? (heures/60).toFixed(2).replace('.',',') : '']);
+  });
+  downloadCSV(rows, `presence_${today}.csv`);
+  toast('Export présence du jour généré.', 'success');
 }
 
 // ─── PAGE: GESTION CONGÉS & ABSENCES (Admin) ─────────────────────────────────
@@ -4652,6 +4785,270 @@ function exportAbsencesCSV() {
   });
   downloadCSV(rows, `absences_${dateStr(new Date())}.csv`);
   toast('Export absences.','success');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PAGE: PLANNING ROTATION (Admin) — vue d'ensemble de l'équipe, clic pour
+//  marquer une absence directement sur la grille. Remplace l'ancien onglet
+//  « Congés & absences » comme point d'entrée principal (page conservée dans
+//  le code, accessible via le bouton « Historique complet » ci-dessous).
+// ═══════════════════════════════════════════════════════════════════════════
+let _rotMode = 'semaine';   // 'semaine' | 'mois'
+let _rotWeekStart = null;   // date ISO du lundi de la semaine affichée
+let _rotYM = null;          // 'YYYY-MM' du mois affiché
+
+function _rotMondayOf(d) {
+  const day = (d.getDay()+6) % 7; // lundi=0 ... dimanche=6
+  const m = new Date(d); m.setDate(d.getDate() - day);
+  return dateStr(m);
+}
+
+function renderPagePlanningRotation(mode, ref) {
+  const today = new Date();
+  const todayStr = dateStr(today);
+  if (mode) _rotMode = mode;
+  if (_rotMode === 'semaine') {
+    if (ref) _rotWeekStart = ref;
+    if (!_rotWeekStart) _rotWeekStart = _rotMondayOf(today);
+  } else {
+    if (ref) _rotYM = ref;
+    if (!_rotYM) _rotYM = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  const candidats = store.users()
+    .filter(u => u.statut === 'actif' && (u.role === ROLES.COLLAB || u.role === ROLES.FORMATEUR))
+    .sort((a,b) => (a.nom||'').localeCompare(b.nom||''));
+
+  let days, periodeLabel, prevRef, nextRef;
+  if (_rotMode === 'semaine') {
+    const start = new Date(_rotWeekStart + 'T00:00:00');
+    days = Array.from({length:7}, (_,i) => { const d = new Date(start); d.setDate(start.getDate()+i); return dateStr(d); });
+    const finSemaine = days[6];
+    periodeLabel = `Semaine du ${_rotWeekStart.slice(8)}/${_rotWeekStart.slice(5,7)} au ${finSemaine.slice(8)}/${finSemaine.slice(5,7)}`;
+    const prevD = new Date(start); prevD.setDate(start.getDate()-7);
+    const nextD = new Date(start); nextD.setDate(start.getDate()+7);
+    prevRef = dateStr(prevD); nextRef = dateStr(nextD);
+  } else {
+    const [year, month] = _rotYM.split('-').map(Number);
+    const nbJours = new Date(year, month, 0).getDate();
+    days = Array.from({length:nbJours}, (_,i) => dateStr(new Date(year, month-1, i+1)));
+    periodeLabel = `${MOIS[month-1]} ${year}`;
+    const pd = new Date(year, month-2, 1); prevRef = `${pd.getFullYear()}-${String(pd.getMonth()+1).padStart(2,'0')}`;
+    const nd = new Date(year, month, 1); nextRef = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  const pending = store.absences().filter(a => a.statut === 'en_attente');
+  const absencesPeriode = store.absences().filter(a => a.statut === 'approuve' && days.some(ds => a.dateDebut<=ds && a.dateFin>=ds));
+  const joursAbsencePeriode = absencesPeriode.reduce((acc,a) => acc + days.filter(ds => a.dateDebut<=ds && a.dateFin>=ds).length, 0);
+  const absentsAujourdhui = candidats.filter(u => isAbsentAujourdHui(u.id)).length;
+
+  function renderRotCell(u, ds) {
+    const ouvrable = isJourOuvrable(ds);
+    const abs = getAbsenceDate(u.id, ds);
+    const isToday = ds === todayStr;
+    let content = '', title;
+    if (abs) {
+      const info = ABSENCE_TYPES[abs.type] || ABSENCE_TYPES.absence;
+      content = info.icon;
+      title = `${info.label} — du ${abs.dateDebut} au ${abs.dateFin}`;
+    } else if (!ouvrable) {
+      content = '·';
+      title = FERIES_MAYOTTE.has(ds) ? 'Jour férié' : 'Week-end';
+    } else {
+      title = 'Présent — cliquer pour marquer une absence';
+    }
+    const cls = abs ? 'rot-abs' : (!ouvrable ? 'rot-off' : 'rot-empty');
+    return `<td class="rot-cell ${cls}${isToday?' rot-today':''}" data-uid="${u.id}" data-date="${ds}" title="${esc(title)}">${content}</td>`;
+  }
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <style>
+      .rot-wrap{overflow-x:auto}
+      .rot-table{border-collapse:separate;border-spacing:3px;width:max-content}
+      .rot-table th{font-size:10px;color:var(--text3);text-transform:uppercase;padding:2px 3px;text-align:center;white-space:nowrap;font-weight:700}
+      .rot-name-h,.rot-name{position:sticky;left:0;background:var(--bg2);z-index:2}
+      .rot-name{font-weight:700;font-size:12.5px;padding:6px 12px;white-space:nowrap;border-right:1px solid var(--border);text-align:left}
+      .rot-name-h{text-align:left;padding:2px 12px;z-index:3}
+      .rot-cell{width:28px;height:28px;min-width:28px;text-align:center;vertical-align:middle;border-radius:7px;cursor:pointer;font-size:13px;border:1px solid var(--border);transition:transform .1s ease}
+      .rot-cell:hover{transform:scale(1.15);border-color:var(--hys-green)}
+      .rot-empty{background:var(--bg3)}
+      .rot-off{background:var(--bg4);color:var(--text3);cursor:default}
+      .rot-off:hover{transform:none;border-color:var(--border)}
+      .rot-abs{background:var(--bg2)}
+      .rot-today{outline:2px solid var(--hys-green);outline-offset:-1px}
+      .rot-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--text3)}
+      @media(max-width:640px){.rot-cell{width:24px;height:24px;min-width:24px;font-size:11px}}
+    </style>
+    <div class="page-header">
+      <div class="page-header-left"><h2>🔄 Planning rotation</h2><p>${periodeLabel} · cliquez une case pour marquer une absence</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="rot-new">➕ Nouvelle absence</button>
+        <button class="btn btn-ghost btn-sm" id="rot-export">📥 Export CSV</button>
+        <button class="btn btn-ghost btn-sm" onclick="navigateTo('conges-admin')">📋 Historique complet</button>
+      </div>
+    </div>
+    <div class="page-body">
+      ${pending.length > 0 ? `
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><div class="card-title">⏳ Demandes en attente (${pending.length})</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Collaborateur</th><th>Type</th><th>Du</th><th>Au</th><th>J.Ouv.</th><th>Actions</th></tr></thead>
+          <tbody>${pending.map(a => {
+            const u = store.users().find(x => x.id === a.userId);
+            const info = ABSENCE_TYPES[a.type] || ABSENCE_TYPES.absence;
+            return `<tr>
+              <td class="td-bold">${u ? esc(u.prenom)+' '+esc(u.nom) : '—'}</td>
+              <td><span class="badge ${info.badge}">${info.icon} ${info.label}</span></td>
+              <td>${a.dateDebut}</td><td>${a.dateFin}</td><td>${a.joursOuvrables}</td>
+              <td style="display:flex;gap:4px" id="rot-pend-${a.id}"></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+
+      <div class="stats-grid">
+        <div class="stat-card red"><div class="stat-label">Absents aujourd'hui</div><div class="stat-value red">${absentsAujourdhui}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Jours d'absence (période)</div><div class="stat-value amber">${joursAbsencePeriode}</div></div>
+        <div class="stat-card blue"><div class="stat-label">Collaborateurs suivis</div><div class="stat-value blue">${candidats.length}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Demandes en attente</div><div class="stat-value amber">${pending.length}</div></div>
+      </div>
+
+      <div class="filters-bar" style="align-items:center;flex-wrap:wrap">
+        <div class="btn-group" style="display:flex;gap:4px">
+          <button class="btn btn-sm ${_rotMode==='semaine'?'btn-primary':'btn-ghost'}" id="rot-mode-semaine">Semaine</button>
+          <button class="btn btn-sm ${_rotMode==='mois'?'btn-primary':'btn-ghost'}" id="rot-mode-mois">Mois</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="rot-prev">← Précédent</button>
+        <button class="btn btn-ghost btn-sm" id="rot-today">Aujourd'hui</button>
+        <button class="btn btn-ghost btn-sm" id="rot-next">Suivant →</button>
+      </div>
+
+      <div class="card"><div class="card-body" style="padding:14px">
+        <div class="rot-wrap">
+          <table class="rot-table">
+            <thead><tr>
+              <th class="rot-name-h">Collaborateur</th>
+              ${days.map(ds => `<th>${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'][(new Date(ds+'T00:00:00').getDay()+6)%7]}<br>${ds.slice(8)}</th>`).join('')}
+            </tr></thead>
+            <tbody>${candidats.length === 0
+              ? `<tr><td colspan="${days.length+1}" style="text-align:center;padding:20px;color:var(--text3)">Aucun collaborateur ou formateur actif</td></tr>`
+              : candidats.map(u => `<tr>
+                  <td class="rot-name">${esc(u.prenom)} ${esc(u.nom)}</td>
+                  ${days.map(ds => renderRotCell(u, ds)).join('')}
+                </tr>`).join('')
+            }</tbody>
+          </table>
+        </div>
+        <div class="rot-legend">
+          ${Object.entries(ABSENCE_TYPES).map(([k,v]) => `<span>${v.icon} ${v.label}</span>`).join('')}
+          <span>· Week-end/férié</span>
+        </div>
+      </div></div>
+    </div>`;
+
+  // Actions demandes en attente
+  pending.forEach(a => {
+    const cell = document.getElementById(`rot-pend-${a.id}`); if (!cell) return;
+    const btnOk = document.createElement('button');
+    btnOk.className = 'btn btn-success btn-xs'; btnOk.textContent = '✅'; btnOk.title = 'Approuver';
+    btnOk.addEventListener('click', () => { updateAbsenceStatut(a.id, 'approuve'); renderPagePlanningRotation(); });
+    const btnNok = document.createElement('button');
+    btnNok.className = 'btn btn-danger btn-xs'; btnNok.textContent = '❌'; btnNok.title = 'Refuser';
+    btnNok.addEventListener('click', () => { updateAbsenceStatut(a.id, 'refuse'); renderPagePlanningRotation(); });
+    cell.appendChild(btnOk); cell.appendChild(btnNok);
+  });
+
+  document.getElementById('rot-new')?.addEventListener('click', showModalNewAbsenceAdmin);
+  document.getElementById('rot-export')?.addEventListener('click', exportAbsencesCSV);
+  document.getElementById('rot-mode-semaine')?.addEventListener('click', () => renderPagePlanningRotation('semaine'));
+  document.getElementById('rot-mode-mois')?.addEventListener('click', () => renderPagePlanningRotation('mois'));
+  document.getElementById('rot-prev')?.addEventListener('click', () => renderPagePlanningRotation(_rotMode, prevRef));
+  document.getElementById('rot-next')?.addEventListener('click', () => renderPagePlanningRotation(_rotMode, nextRef));
+  document.getElementById('rot-today')?.addEventListener('click', () => {
+    if (_rotMode === 'semaine') renderPagePlanningRotation('semaine', _rotMondayOf(new Date()));
+    else renderPagePlanningRotation('mois', `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`);
+  });
+  document.querySelectorAll('.rot-cell[data-uid]').forEach(td => {
+    td.addEventListener('click', () => showModalPlanningCell(td.getAttribute('data-uid'), td.getAttribute('data-date')));
+  });
+}
+
+// Ouvre un petit formulaire pour marquer/modifier/supprimer l'absence d'un
+// collaborateur à une date donnée, cliqué directement depuis la grille.
+function showModalPlanningCell(userId, ds) {
+  const u = store.users().find(x => x.id === userId); if (!u) return;
+  const existantes = store.absences().filter(a => a.userId===userId && a.statut==='approuve' && a.dateDebut<=ds && a.dateFin>=ds);
+  const ouvrable = isJourOuvrable(ds);
+  openModal(`${esc(u.prenom)} ${esc(u.nom)} — ${ds}`, `
+    ${existantes.length ? existantes.map(a => {
+      const info = ABSENCE_TYPES[a.type] || ABSENCE_TYPES.absence;
+      return `<div class="alert alert-info" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+        <span>${info.icon} ${info.label} — du ${a.dateDebut} au ${a.dateFin}</span>
+        <button class="btn btn-danger btn-xs rot-del-abs" data-id="${a.id}">🗑 Supprimer</button>
+      </div>`;
+    }).join('') : `<p class="text-muted text-xs" style="margin-bottom:10px">${ouvrable?'Aucune absence enregistrée ce jour — considéré présent.':'Jour non ouvrable (week-end/férié).'}</p>`}
+    <div class="form-group"><label>Marquer une absence</label>
+      <select id="rot-type" class="form-control">
+        ${Object.entries(ABSENCE_TYPES).map(([k,v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Du</label><input id="rot-deb" type="date" class="form-control" value="${ds}"></div>
+      <div class="form-group"><label>Au</label><input id="rot-fin" type="date" class="form-control" value="${ds}"></div>
+    </div>
+    <div id="rot-info" class="alert alert-info" style="display:none"></div>
+    <div class="form-group"><label>Commentaire</label><input id="rot-comment" class="form-control" placeholder="Motif, précision…"></div>
+    <div id="rot-err" style="display:none"></div>`,
+    [
+      { label:'Annuler', cls:'btn-ghost', action: closeModal },
+      { label:'✅ Enregistrer', cls:'btn-primary', action: () => {
+        const type    = document.getElementById('rot-type')?.value;
+        const debut   = document.getElementById('rot-deb')?.value;
+        const fin     = document.getElementById('rot-fin')?.value;
+        const comment = document.getElementById('rot-comment')?.value?.trim()||'';
+        const err     = document.getElementById('rot-err');
+        if (!debut || !fin) { showAlert(err,'⚠️ Dates obligatoires.','danger'); return; }
+        if (debut > fin) { showAlert(err,'⚠️ Date début > date fin.','danger'); return; }
+        const jours = joursOuvrablesBetween(debut, fin);
+        const absences = store.absences();
+        absences.push({ id:uid(), userId, type, dateDebut:debut, dateFin:fin,
+          joursOuvrables:jours, commentaire:comment, statut:'approuve',
+          updatedBy:currentUser.id, createdByAdmin:true, createdAt:now(), updatedAt:now() });
+        store.saveAbsences(absences);
+        store.addAudit({ action:'ABSENCE_CREE_ADMIN', userId:currentUser.id,
+          detail:`${ABSENCE_TYPES[type]?.label} pour ${esc(u.prenom)} ${esc(u.nom)} du ${debut} au ${fin} (${jours} j)` });
+        store.addNotif({ type: type==='cp'||type==='maladie'?'conge_approuve':'info', userId,
+          message:`${ABSENCE_TYPES[type]?.label} enregistrée par l'administration du ${debut} au ${fin} (${jours} j)` });
+        closeModal(); toast('Absence enregistrée.','success'); renderPagePlanningRotation();
+      }}
+    ]);
+  document.querySelectorAll('.rot-del-abs').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const absId = btn.getAttribute('data-id');
+      const a = store.absences().find(x => x.id === absId);
+      store.saveAbsences(store.absences().filter(x => x.id !== absId));
+      store.addAudit({ action:'ABSENCE_SUPPRIMEE_ADMIN', userId:currentUser.id,
+        detail:`Absence ${a?ABSENCE_TYPES[a.type]?.label:''} supprimée pour ${esc(u.prenom)} ${esc(u.nom)}` });
+      toast('Absence supprimée.','success'); closeModal(); renderPagePlanningRotation();
+    });
+  });
+  const updateRotInfo = () => {
+    const deb = document.getElementById('rot-deb')?.value;
+    const fin = document.getElementById('rot-fin')?.value;
+    const info = document.getElementById('rot-info');
+    if (deb && fin && deb <= fin && info) {
+      const j = joursOuvrablesBetween(deb, fin);
+      const solde = getSoldeComplet(userId);
+      info.style.display = 'flex';
+      info.textContent = `📅 ${j} jour(s) ouvrable(s) · Solde CP disponible : ${solde.total} j`;
+    }
+  };
+  setTimeout(() => {
+    document.getElementById('rot-deb')?.addEventListener('change', updateRotInfo);
+    document.getElementById('rot-fin')?.addEventListener('change', updateRotInfo);
+    updateRotInfo();
+  }, 80);
 }
 
 // ─── PAGE: RAPPORT MENSUEL (Admin) ───────────────────────────────────────────
@@ -7263,7 +7660,7 @@ function initSupabaseRealtime() {
   // Polling léger toutes les 30s pour les tables critiques
   window._realtimePoll = setInterval(async () => {
     if (!navigator.onLine || !supa.isConfigured()) return;
-    const pagesBesoinSync = ['presence-rt', 'dashboard-dg', 'emargements-admin'];
+    const pagesBesoinSync = ['presence-rt', 'dashboard-dg', 'emargements-admin', 'planning-rotation'];
     if (pagesBesoinSync.includes(currentPage)) {
       let changed = false;
       // Écriture directe (setter non patché) : ces données viennent DU serveur,
@@ -7272,12 +7669,21 @@ function initSupabaseRealtime() {
       if (pts && JSON.stringify(pts) !== JSON.stringify(store.pointages())) {
         _storeSetOrig('hys_pointages', pts); store.invalidate('hys_pointages'); changed = true;
       }
-      const abs = await supa.select('hys_absences', 'statut=eq.en_attente');
+      // Toutes les absences (pas seulement en_attente) : depuis que l'admin peut créer
+      // des absences déjà approuvées (planning rotation), il faut aussi voir arriver
+      // celles créées depuis un autre poste/session en quasi temps réel.
+      const abs = await supa.select('hys_absences', 'limit=500');
       if (abs) {
         const allAbs = store.absences();
         const before = JSON.stringify(allAbs);
         abs.forEach(a => { const i = allAbs.findIndex(x=>x.id===a.id); if(i>=0)allAbs[i]=a; else allAbs.push(a); });
         if (JSON.stringify(allAbs) !== before) { _storeSetOrig('hys_absences', allAbs); store.invalidate('hys_absences'); changed = true; }
+      }
+      if (currentPage === 'presence-rt') {
+        const cnx = await supa.select('hys_connexions_stagiaires', 'limit=200');
+        if (cnx && JSON.stringify(cnx) !== JSON.stringify(store.connexions())) {
+          _storeSetOrig('hys_connexions_stagiaires', cnx); store.invalidate('hys_connexions_stagiaires'); changed = true;
+        }
       }
       // Ne re-rend la page que si les données ont réellement changé (évite le scintillement toutes les 30 s)
       if (changed) { try { navigateTo(currentPage); } catch(e) {} }
@@ -7290,6 +7696,9 @@ function initSupabaseRealtime() {
       notifs.forEach(n => { if (!localNotifs.find(x=>x.id===n.id)) { localNotifs.unshift(n); changed=true; notifyBrowser(n); }});
       if (changed) { store.saveNotifs(localNotifs); updateNotifBadge(); }
     }
+    // Alerte discrète (notification navigateur) dès qu'un nouveau retard apparaît,
+    // même si l'admin n'a pas la page Présence temps réel ouverte.
+    checkRetardsEtNotifier();
   }, 30000);
 
   console.log('[HYS] Realtime polling démarré (30s)');
@@ -7722,6 +8131,8 @@ function initShortcuts() {
     if (e.altKey && e.key === 'p') { e.preventDefault(); navigateTo('presence-rt'); }
     // Alt+N → Notifications
     if (e.altKey && e.key === 'n') { e.preventDefault(); navigateTo('notifications'); }
+    // Alt+C → Planning rotation
+    if (e.altKey && e.key === 'c') { e.preventDefault(); navigateTo('planning-rotation'); }
   });
 }
 
@@ -7734,7 +8145,7 @@ function showShortcutsHelp() {
         ['Alt + D',   'Dashboard Direction'],
         ['Alt + P',   'Présence temps réel'],
         ['Alt + Q',   'Qualiopi'],
-        ['Alt + C',   'Congés & absences'],
+        ['Alt + C',   'Planning rotation'],
         ['Alt + N',   'Notifications'],
         ['Alt + E',   'Pointer Entrée (formateur/collab)'],
         ['Alt + S',   'Pointer Sortie (formateur/collab)'],
