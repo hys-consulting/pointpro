@@ -1,10 +1,14 @@
 // HYS PointPro — Service Worker (mode hors-ligne)
 // Fichier réel (au lieu d'un blob: URL, non supporté par les navigateurs pour les SW).
 // Pense à changer CACHE_VERSION à chaque déploiement important pour forcer le renouvellement du cache.
-const CACHE_VERSION = 'hys-pointpro-v2.2';
+const CACHE_VERSION = 'hys-pointpro-v2.3';
 const ASSETS = [
   './',
   './index.html',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', e => {

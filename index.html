@@ -2,6 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
+<script>(function(){try{var t=localStorage.getItem('hys_theme');if(t==='dark'||(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.setAttribute('data-theme','dark');}}catch(e){}})();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#2ebd6b">
 <meta name="mobile-web-app-capable" content="yes">
@@ -10,7 +11,9 @@
 <meta name="apple-mobile-web-app-title" content="HYS PointPro">
 <meta name="description" content="HYS Consulting · Gestion des présences CFA Apprentissage">
 <title>HYS PointPro — CFA Apprentissage</title>
-<link rel="manifest" href="#" id="manifest-link">
+<link rel="manifest" href="manifest.json" id="manifest-link">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -43,7 +46,31 @@
   --transition:.18s cubic-bezier(.4,0,.2,1);
 }
 
-body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6;-webkit-font-smoothing:antialiased}
+/* ── DARK THEME ── */
+:root[data-theme="dark"]{
+  --bg:#0f1a20;--bg2:#16232b;--bg3:#1b2831;--bg4:#22323c;
+  --border:#2a3942;--border2:#3a4b56;
+  --text:#e7edf1;--text2:#aebcc6;--text3:#7e8f9a;--text4:#5c6c76;
+
+  --hys-green-light:rgba(46,189,107,.14);--hys-green-mid:rgba(46,189,107,.32);
+  --blue3:rgba(59,130,246,.16);--red-light:rgba(239,68,68,.16);
+  --amber-light:rgba(245,158,11,.16);--purple-light:rgba(139,92,246,.16);--teal-light:rgba(13,148,136,.16);
+  --green3:rgba(46,189,107,.14);
+
+  --card:#16232b;--card2:#1b2831;
+  --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.24);
+  --shadow-md:0 4px 6px rgba(0,0,0,.28),0 10px 30px rgba(0,0,0,.3);
+  --shadow-lg:0 10px 25px rgba(0,0,0,.35),0 20px 48px rgba(0,0,0,.32);
+}
+:root[data-theme="dark"] #view-login.active,
+:root[data-theme="dark"] #view-change-pwd > div{
+  background:linear-gradient(135deg,#0f1a20 0%,#12211c 40%,#0f1a20 100%) !important;
+}
+:root[data-theme="dark"] .form-control{color-scheme:dark}
+:root[data-theme="dark"] ::-webkit-scrollbar-track{background:var(--bg)}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb{background:var(--border2)}
+
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6;-webkit-font-smoothing:antialiased;transition:background .2s ease,color .2s ease}
 
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:var(--bg)}
@@ -472,7 +499,25 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
   background:var(--hys-dark);border-top:1px solid rgba(255,255,255,.1);
   z-index:100;padding:4px 0 env(safe-area-inset-bottom,0);
   box-shadow:0 -4px 20px rgba(0,0,0,.15);}
-@media(max-width:900px){.section-nav{display:flex}.sidebar{display:none}}
+@media(max-width:900px){
+  .section-nav{display:flex}.sidebar{display:none}
+  /* Espace réservé en bas pour ne pas passer sous la barre de navigation mobile fixe */
+  .main-content{padding-bottom:64px}
+}
+@media(max-width:640px){
+  .page-header{padding:18px 16px 0;margin-bottom:16px}
+  .page-header-left h2{font-size:19px}
+  .page-body{padding:0 16px 24px}
+  .card{padding:16px}
+  .stats-grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  .stat-value{font-size:22px!important}
+  table{font-size:12px}
+  th,td{padding:8px 10px!important}
+  .modal-body{padding:16px}
+  .modal-header{padding:16px 16px 12px}
+  .modal-footer{padding:12px 16px;flex-wrap:wrap}
+  .login-box{padding:32px 22px}
+}
 .section-nav-items{display:flex;width:100%}
 .snav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
   padding:8px 4px;cursor:pointer;color:rgba(255,255,255,.45);font-size:10px;
@@ -568,6 +613,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
 
 <!-- LOGIN VIEW -->
 <div class="view" id="view-login">
+  <button class="btn btn-icon btn-ghost" id="theme-toggle-btn-login" title="Thème sombre / clair" style="position:fixed;top:16px;right:16px;z-index:50">🌙</button>
   <div class="login-box">
     <div class="login-logo">
       <svg width="80" height="80" viewBox="0 0 200 200" class="hys-logo-glow">
@@ -644,7 +690,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
           <svg width="40" height="40" viewBox="0 0 200 200"><use href="#hys-logo"/></svg>
           <div class="brand-text">
             <div class="name"><span class="hys-g">HYS</span> PointPro</div>
-            <div class="version">v2.2 · CFA Apprentissage</div>
+            <div class="version">v2.3 · CFA Apprentissage</div>
           </div>
         </div>
         <button onclick="openSearch()" title="Recherche (Ctrl+K)" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.6);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;margin-top:8px;width:100%;text-align:left;font-family:var(--font)">🔍 Rechercher… <kbd style="float:right;font-size:10px;opacity:.6">Ctrl+K</kbd></button>
@@ -655,9 +701,12 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
           <div class="user-name" id="sb-name">---</div>
           <div class="user-meta" id="sb-meta">---</div>
         </div>
-        <div class="notif-bell" id="notif-bell-btn" style="margin-left:auto;cursor:pointer">
-          <button class="btn btn-icon btn-ghost" title="Notifications">🔔</button>
-          <span class="notif-count" id="notif-count" style="display:none">0</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:2px">
+          <button class="btn btn-icon btn-ghost" id="theme-toggle-btn" title="Thème sombre / clair">🌙</button>
+          <div class="notif-bell" id="notif-bell-btn" style="cursor:pointer">
+            <button class="btn btn-icon btn-ghost" title="Notifications">🔔</button>
+            <span class="notif-count" id="notif-count" style="display:none">0</span>
+          </div>
         </div>
       </div>
       <nav class="sidebar-nav" id="sidebar-nav"></nav>
@@ -705,7 +754,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
 
 // ─── CONFIG SUPABASE (à modifier si vous utilisez Supabase) ──────────────────
 // Voir Paramètres → Supabase dans l'app pour les instructions
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 8 * 3600 * 1000;
@@ -934,6 +983,41 @@ function downloadCSV(rows, filename) {
   a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
+// ─── MOTEUR GRAPHIQUES (Chart.js via CDN, chargé à la demande) ────────────────
+let _chartjsLoading = false;
+function loadChartJS() {
+  return new Promise((resolve, reject) => {
+    if (window.Chart) { resolve(window.Chart); return; }
+    if (_chartjsLoading) { const w = setInterval(() => { if (window.Chart) { clearInterval(w); resolve(window.Chart); } }, 100); return; }
+    _chartjsLoading = true;
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';
+    s.onload  = () => resolve(window.Chart);
+    s.onerror = () => reject(new Error('Chart.js non chargé'));
+    document.head.appendChild(s);
+  });
+}
+// Détruit une instance de graphique existante attachée à un canvas (évite les doublons au re-render).
+const _chartInstances = {};
+function destroyChart(key) { if (_chartInstances[key]) { try { _chartInstances[key].destroy(); } catch(e){} delete _chartInstances[key]; } }
+function isDarkMode() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
+function chartTextColor() { return isDarkMode() ? '#cbd5e1' : '#4a5568'; }
+function chartGridColor() { return isDarkMode() ? 'rgba(203,213,225,.12)' : 'rgba(74,85,104,.08)'; }
+
+// ─── THÈME SOMBRE / CLAIR ───────────────────────────────────────────────────────
+function syncThemeIcon() {
+  const icon = isDarkMode() ? '☀️' : '🌙';
+  document.querySelectorAll('#theme-toggle-btn, #theme-toggle-btn-login').forEach(b => { if (b) b.textContent = icon; });
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('hys_theme', theme); } catch(e) {}
+  syncThemeIcon();
+  // Recharge la page courante pour que les graphiques (couleurs axes/grille) suivent le thème.
+  try { if (currentUser && currentPage) navigateTo(currentPage); } catch(e) {}
+}
+function toggleTheme() { applyTheme(isDarkMode() ? 'light' : 'dark'); }
+
 // ─── MOTEUR EXCEL (SheetJS via CDN, chargé à la demande comme jsPDF) ──────────
 let _xlsxLoading = false;
 function loadXLSX() {
@@ -1112,6 +1196,37 @@ function updateNotifBadge() {
   if (!cnt) return;
   if (unread > 0) { cnt.style.display = 'flex'; cnt.textContent = unread > 99 ? '99+' : unread; }
   else { cnt.style.display = 'none'; }
+}
+
+// ─── NOTIFICATIONS NAVIGATEUR (Web Notification API) ───────────────────────────
+// Complète les notifications in-app par une vraie notification système, y compris
+// onglet en arrière-plan / navigateur minimisé. Nécessite un geste utilisateur
+// explicite pour la demande de permission (voir Paramètres → Notifications).
+function notifPermissionStatus() {
+  return ('Notification' in window) ? Notification.permission : 'unsupported';
+}
+async function requestBrowserNotifPermission() {
+  if (!('Notification' in window)) { toast('Notifications non supportées par ce navigateur.', 'error'); return 'unsupported'; }
+  if (Notification.permission === 'granted') return 'granted';
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') { toast('🔔 Notifications navigateur activées.', 'success'); new Notification('HYS PointPro', { body: 'Les notifications sont activées sur cet appareil.', icon: 'icons/icon-192.png' }); }
+  else if (perm === 'denied') toast('Notifications refusées — réactivez-les dans les réglages du navigateur si besoin.', 'error');
+  return perm;
+}
+const NOTIF_ICONS_BROWSER = { pointage:'⏱️', conge_demande:'🌴', conge_approuve:'✅', conge_refuse:'❌', info:'ℹ️', objectif_alerte:'🎯', objectif_ok:'🎯', message:'💬' };
+function notifyBrowser(notif) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) return; // déjà visible via badge/toast in-app
+    const icon = NOTIF_ICONS_BROWSER[notif.type] || '🔔';
+    const n = new Notification(`HYS PointPro ${icon}`, {
+      body: notif.message,
+      icon: 'icons/icon-192.png',
+      badge: 'icons/icon-192.png',
+      tag: notif.id,
+    });
+    n.onclick = () => { window.focus(); try { navigateTo('notifications'); } catch(e) {} n.close(); };
+  } catch(e) { console.warn('[HYS] notifyBrowser:', e); }
 }
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
@@ -1438,6 +1553,10 @@ function renderDashboard() {
         <div class="stat-card teal"><div class="stat-label">Collaborateurs</div><div class="stat-value teal">${collabs.length}</div></div>
       </div>
       <div class="card">
+        <div class="card-header"><div class="card-title">📈 Activité des 7 derniers jours</div></div>
+        <div style="position:relative;height:220px"><canvas id="dash-chart"></canvas></div>
+      </div>
+      <div class="card">
         <div class="card-header"><div class="card-title">👥 Présence des formateurs — ${today}</div></div>
         ${formateurs.length === 0 ? '<div class="empty-state"><div class="icon">🎓</div><p>Aucun formateur externe</p></div>' :
         `<div class="table-wrap"><table>
@@ -1459,6 +1578,42 @@ function renderDashboard() {
       </div>
       ${semCfa ? renderRecentEmargements() : ''}
     </div>`;
+  renderDashboardActivityChart();
+}
+
+// Graphique "activité 7 derniers jours" : pointages d'entrée distincts par jour, formateurs vs collaborateurs.
+async function renderDashboardActivityChart() {
+  const canvas = document.getElementById('dash-chart');
+  if (!canvas) return;
+  let Chart;
+  try { Chart = await loadChartJS(); } catch(e) { canvas.closest('.card').innerHTML = '<div class="empty-state"><p class="text-muted text-xs">Graphique indisponible hors-ligne.</p></div>'; return; }
+  if (!document.getElementById('dash-chart')) return; // page changée entre temps
+
+  const users = store.users();
+  const pointages = store.pointages();
+  const days = [];
+  for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate()-i); days.push(dateStr(d)); }
+  const roleOf = id => users.find(u=>u.id===id)?.role;
+  const dataFormateurs = days.map(ds => new Set(pointages.filter(p=>p.date===ds && p.type==='entree' && roleOf(p.userId)===ROLES.FORMATEUR).map(p=>p.userId)).size);
+  const dataCollabs = days.map(ds => new Set(pointages.filter(p=>p.date===ds && p.type==='entree' && roleOf(p.userId)===ROLES.COLLAB).map(p=>p.userId)).size);
+  const labels = days.map(ds => { const [y,m,d] = ds.split('-'); return `${d}/${m}`; });
+
+  destroyChart('dash-chart');
+  _chartInstances['dash-chart'] = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'Formateurs', data: dataFormateurs, backgroundColor: '#3b82f6', borderRadius: 4, maxBarThickness: 28 },
+      { label: 'Collaborateurs', data: dataCollabs, backgroundColor: '#2ebd6b', borderRadius: 4, maxBarThickness: 28 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { color: chartTextColor() }, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, ticks: { color: chartTextColor(), precision: 0 }, grid: { color: chartGridColor() } },
+      },
+      plugins: { legend: { position: 'bottom', labels: { color: chartTextColor(), boxWidth: 12, font: { size: 11 } } } },
+    },
+  });
 }
 
 function renderRecentEmargements() {
@@ -2291,6 +2446,7 @@ function renderPagePresencesStats(filterPromo='') {
             <td>${tauxBadge(p.taux)}</td><td>${bar(p.taux)}</td>
           </tr>`).join('')}</tbody>
         </table></div>
+        ${promoStats.length ? `<div style="position:relative;height:${Math.max(180, promoStats.length*46)}px;margin-top:14px"><canvas id="ps-chart"></canvas></div>` : ''}
       </div>
 
       <div class="card">
@@ -2315,6 +2471,33 @@ function renderPagePresencesStats(filterPromo='') {
     </div>`;
   document.getElementById('ps-promo')?.addEventListener('change', e => renderPagePresencesStats(e.target.value));
   document.getElementById('ps-xlsx')?.addEventListener('click', () => exportPresencesXLSX(filterPromo));
+  renderPresencesStatsChart(promoStats);
+}
+
+async function renderPresencesStatsChart(promoStats) {
+  const canvas = document.getElementById('ps-chart');
+  if (!canvas) return;
+  let Chart;
+  try { Chart = await loadChartJS(); } catch(e) { return; }
+  if (!document.getElementById('ps-chart')) return;
+
+  const colorFor = t => t>=90 ? '#2ebd6b' : t>=75 ? '#3b82f6' : t>=50 ? '#f59e0b' : '#ef4444';
+  destroyChart('ps-chart');
+  _chartInstances['ps-chart'] = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: promoStats.map(p => p.promo),
+      datasets: [{ label: 'Taux de présence (%)', data: promoStats.map(p => p.taux), backgroundColor: promoStats.map(p => colorFor(p.taux)), borderRadius: 4, maxBarThickness: 28 }],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { min: 0, max: 100, ticks: { color: chartTextColor(), callback: v => v+'%' }, grid: { color: chartGridColor() } },
+        y: { ticks: { color: chartTextColor() }, grid: { display: false } },
+      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${ctx.parsed.x}% de présence` } } },
+    },
+  });
 }
 
 async function exportPresencesXLSX(filterPromo='') {
@@ -3290,6 +3473,11 @@ function renderPageParametres() {
           </div>
         </div>
         <div class="settings-section">
+          <h3>🔔 Notifications navigateur</h3>
+          <p class="text-xs text-muted" style="margin-bottom:10px">Reçois une alerte système (même onglet fermé/minimisé) pour les congés à valider, messages, objectifs… en plus des notifications dans l'app.</p>
+          <div id="notif-perm-status" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"></div>
+        </div>
+        <div class="settings-section">
           <h3>Mon mot de passe</h3>
           <div class="form-group"><label>Nouveau mot de passe</label>
             <input id="set-pwd" type="password" class="form-control" placeholder="Laisser vide si inchangé" style="max-width:260px">
@@ -3302,6 +3490,8 @@ function renderPageParametres() {
         <button class="btn btn-primary btn-sm" id="set-save">💾 Enregistrer</button>
       </div>
     </div>`;
+
+  renderNotifPermStatus();
 
   document.getElementById('set-save')?.addEventListener('click', async () => {
     const s = store.settings();
@@ -3324,6 +3514,27 @@ function renderPageParametres() {
     if (msg) msg.style.display = 'none';
     store.addAudit({ action:'SETTINGS_UPDATE', userId:currentUser.id, detail:'Paramètres mis à jour' });
     toast('Paramètres enregistrés.','success');
+  });
+}
+
+function renderNotifPermStatus() {
+  const box = document.getElementById('notif-perm-status');
+  if (!box) return;
+  const status = notifPermissionStatus();
+  const badges = {
+    unsupported: { cls:'badge-gray',  txt:'Non supporté par ce navigateur' },
+    granted:     { cls:'badge-green', txt:'✅ Activées' },
+    denied:      { cls:'badge-red',   txt:'❌ Bloquées (réactiver dans les réglages du navigateur)' },
+    default:     { cls:'badge-amber', txt:'⏸️ Non activées' },
+  };
+  const b = badges[status] || badges.default;
+  box.innerHTML = `<span class="badge ${b.cls}">${b.txt}</span>` +
+    (status === 'default' ? `<button class="btn btn-primary btn-sm" id="notif-perm-btn">🔔 Activer les notifications</button>` : '') +
+    (status === 'granted' ? `<button class="btn btn-ghost btn-sm" id="notif-perm-test">Envoyer un test</button>` : '');
+  document.getElementById('notif-perm-btn')?.addEventListener('click', async () => { await requestBrowserNotifPermission(); renderNotifPermStatus(); });
+  document.getElementById('notif-perm-test')?.addEventListener('click', () => {
+    try { new Notification('HYS PointPro 🔔', { body: 'Ceci est une notification de test.', icon: 'icons/icon-192.png' }); }
+    catch(e) { toast('Impossible d\'envoyer la notification de test.', 'error'); }
   });
 }
 
@@ -6683,7 +6894,7 @@ function initSupabaseRealtime() {
     if (notifs && notifs.length > 0) {
       const localNotifs = store.notifs();
       let changed = false;
-      notifs.forEach(n => { if (!localNotifs.find(x=>x.id===n.id)) { localNotifs.unshift(n); changed=true; }});
+      notifs.forEach(n => { if (!localNotifs.find(x=>x.id===n.id)) { localNotifs.unshift(n); changed=true; notifyBrowser(n); }});
       if (changed) { store.saveNotifs(localNotifs); updateNotifBadge(); }
     }
   }, 30000);
@@ -8149,6 +8360,9 @@ function attachEventListeners() {
     if (fill) { fill.style.width = s.pct+'%'; fill.style.background = s.color; }
     if (label) label.textContent = pwd.length > 0 ? 'Force : '+s.level : '';
   });
+  document.getElementById('theme-toggle-btn')?.addEventListener('click', toggleTheme);
+  document.getElementById('theme-toggle-btn-login')?.addEventListener('click', toggleTheme);
+  syncThemeIcon();
   document.getElementById('btn-logout')?.addEventListener('click', doLogout);
   document.getElementById('btn-kiosk')?.addEventListener('click', () => {
     if (isAdmin()) {
