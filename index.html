@@ -6506,8 +6506,17 @@ function renderPageDashboardDG() {
     return pts.length > 0 && pts[pts.length-1].type === 'entree';
   });
   const absencesPending = store.absences().filter(a => a.statut === 'en_attente');
-  const emargsJour      = store.emargements().filter(e => e.date === today);
-  const emargsSigned    = emargsJour.filter(e => e.signatureFormateur).length;
+  // Émargements attendus = les sessions (matin/après-midi) de la semaine CFA active pour
+  // la promotion du jour — pas un simple comptage des enregistrements existants, qui pouvait
+  // afficher un faux « Tous signés » si les 2 records trouvés venaient d'une autre promotion.
+  const emargsSessions  = semCfa ? ['matin','apresmidi'] : [];
+  const emargsJour      = emargsSessions.map(session =>
+    store.emargements().find(e => e.date === today && e.session === session && e.promotion === semCfa.promotion)).filter(Boolean);
+  const emargsSigned    = emargsSessions.filter(session => {
+    const e = store.emargements().find(x => x.date === today && x.session === session && x.promotion === semCfa.promotion);
+    return e && e.signatureFormateur;
+  }).length;
+  const emargsAttendus  = emargsSessions.length;
   const tauxPresence    = collabs.length > 0 ? Math.round((presentCollabs.length / collabs.length) * 100) : 0;
   const prochaineCFA    = store.semainesCfa().filter(s => s.debut > today).sort((a,b) => a.debut.localeCompare(b.debut))[0];
 
@@ -6614,7 +6623,7 @@ function renderPageDashboardDG() {
           <svg width="28" height="28" viewBox="0 0 200 200" style="vertical-align:middle;margin-right:8px"><use href="#hys-logo"/></svg>
           Vue Direction Générale
         </h2>
-        <p>Bonjour Yannick · ${JOURS[now2.getDay()]} ${now2.getDate()} ${MOIS[now2.getMonth()]} ${year}</p>
+        <p>Bonjour ${esc(currentUser.prenom)} · ${JOURS[now2.getDay()]} ${now2.getDate()} ${MOIS[now2.getMonth()]} ${year}</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${semCfa ? `<span class="semaine-badge semaine-cfa">🎓 Semaine CFA · ${semCfa.promotion}</span>` : `<span class="semaine-badge semaine-entreprise">🏢 Semaine entreprise</span>`}
@@ -6661,10 +6670,10 @@ function renderPageDashboardDG() {
           <div class="stat-value teal">${Math.floor(totalHeures/60)}<span style="font-size:14px;color:var(--text3)">h</span></div>
           <div class="stat-sub">${MOIS[now2.getMonth()]} ${year}</div>
         </div>
-        <div class="stat-card ${emargsSigned<emargsJour.length&&emargsJour.length>0?'amber':'green'}" style="cursor:pointer" onclick="navigateTo('emargements-admin')">
+        <div class="stat-card ${emargsSigned<emargsAttendus&&emargsAttendus>0?'amber':'green'}" style="cursor:pointer" onclick="navigateTo('emargements-admin')">
           <div class="stat-label">Émargements signés</div>
-          <div class="stat-value ${emargsSigned<emargsJour.length&&emargsJour.length>0?'amber':'green'}">${emargsSigned}<span style="font-size:14px;color:var(--text3)">/${emargsJour.length}</span></div>
-          <div class="stat-sub">${emargsJour.length===0?'Aucun attendu':emargsSigned===emargsJour.length?'✅ Tous signés':'⚠️ En attente'}</div>
+          <div class="stat-value ${emargsSigned<emargsAttendus&&emargsAttendus>0?'amber':'green'}">${emargsSigned}<span style="font-size:14px;color:var(--text3)">/${emargsAttendus}</span></div>
+          <div class="stat-sub">${emargsAttendus===0?'Aucun attendu':emargsSigned===emargsAttendus?'✅ Tous signés':'⚠️ En attente'}</div>
         </div>
       </div>
 
