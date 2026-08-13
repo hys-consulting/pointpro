@@ -1305,11 +1305,27 @@ function getNavPages() {
     { id:'messagerie',      label:'Messagerie',         icon:'💬' },
   ];
   // COLLAB
-  return [
+  const collabPages = [
     { id:'pointage',        label:'Mon pointage',       icon:'⏱️' },
     { id:'mon-historique',  label:'Mon historique',     icon:'📋' },
   ];
+  const perms = getUserPermissions(currentUser);
+  if (perms.includes('emargements') || perms.includes('affectation_sessions')) {
+    collabPages.push({ section:'FORMATION' });
+    if (perms.includes('emargements')) collabPages.push({ id:'emargements-admin', label:'Émargements', icon:'📋' });
+    if (perms.includes('affectation_sessions')) collabPages.push({ id:'affectation-formateurs', label:'Affectation des sessions', icon:'🗓️' });
+  }
+  return collabPages;
 }
+
+// ─── PERMISSIONS COMPLÉMENTAIRES (collaborateurs) ──────────────────────────
+// Accordées individuellement en plus du rôle (ex: donner à un-e collaborateur-rice
+// l'accès aux Émargements et/ou à l'Affectation des sessions sans le passer admin).
+const EXTRA_PERMISSIONS = {
+  emargements:          { label:'Émargements des stagiaires' },
+  affectation_sessions: { label:'Affectation des sessions de formation' },
+};
+function getUserPermissions(u) { return Array.isArray(u?.permissions) ? u.permissions : []; }
 function getDefaultPage() {
   if (currentUser?.role === ROLES.ADMIN) return 'dashboard-dg';
   const pages = getNavPages().filter(p => p.id); return pages[0]?.id || 'pointage';
@@ -3008,6 +3024,15 @@ function showModalEditUser(id) {
         <option value="__autre__" ${u.service && !POSTES_HYS.includes(u.service)?'selected':''}>Autre (préciser)</option>
       </select>
       <input id="eu-service-autre" class="form-control" style="margin-top:6px;display:${u.service && !POSTES_HYS.includes(u.service)?'block':'none'}" placeholder="Précisez le poste…" value="${u.service && !POSTES_HYS.includes(u.service)?u.service:''}">
+    </div>
+    <div class="form-group" id="eu-perms-wrap" style="display:${u.role===ROLES.COLLAB?'block':'none'}">
+      <label>Accès complémentaires</label>
+      <div class="text-xs text-muted" style="margin-bottom:6px">En plus de son rôle, ce·tte collaborateur·rice peut aussi accéder à :</div>
+      ${Object.entries(EXTRA_PERMISSIONS).map(([key,def]) => `
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-weight:400">
+          <input type="checkbox" id="eu-perm-${key}" ${getUserPermissions(u).includes(key)?'checked':''}>
+          ${esc(def.label)}
+        </label>`).join('')}
     </div>`,
     [
       { label:'Annuler', cls:'btn-ghost', action:closeModal },
@@ -3019,6 +3044,9 @@ function showModalEditUser(id) {
           const serviceSel = document.getElementById('eu-service')?.value;
           users[i].service = serviceSel === '__autre__' ? (document.getElementById('eu-service-autre')?.value?.trim()||'') : (serviceSel||'');
           if (id !== currentUser.id) users[i].role = document.getElementById('eu-role')?.value||users[i].role;
+          users[i].permissions = users[i].role === ROLES.COLLAB
+            ? Object.keys(EXTRA_PERMISSIONS).filter(key => document.getElementById('eu-perm-'+key)?.checked)
+            : [];
           store.saveUsers(users);
           if (id === currentUser.id) { currentUser = users[i]; renderSidebar(); }
           store.addAudit({ action:'USER_EDIT', userId:currentUser.id, detail:`Compte modifié : ${users[i].username}` });
@@ -3029,6 +3057,10 @@ function showModalEditUser(id) {
   document.getElementById('eu-service')?.addEventListener('change', (e) => {
     const autreInput = document.getElementById('eu-service-autre');
     if (autreInput) autreInput.style.display = e.target.value === '__autre__' ? 'block' : 'none';
+  });
+  document.getElementById('eu-role')?.addEventListener('change', (e) => {
+    const wrap = document.getElementById('eu-perms-wrap');
+    if (wrap) wrap.style.display = e.target.value === ROLES.COLLAB ? 'block' : 'none';
   });
 }
 
@@ -6345,6 +6377,7 @@ create table if not exists hys_users (
   statut text default 'actif',
   "firstLogin" boolean default true,
   pin text,
+  permissions jsonb default '[]',
   "createdAt" timestamptz default now()
 );
 
