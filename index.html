@@ -1897,7 +1897,17 @@ function renderPagePointage() {
   document.getElementById('btn-emarg-apm')?.addEventListener('click', () => { navigateTo('emargement'); });
 }
 
+let _lastPointageAt = 0;
 async function doPointage(type, _skipObjectifCheck) {
+  // Anti-rebond : un double-tap tactile ou une touche Alt+E/Alt+S maintenue
+  // un peu trop longtemps redéclenchaient cette fonction plusieurs fois de
+  // suite (le re-rendu du bouton n'arrive qu'à la fin, après le 1er appel) et
+  // créaient plusieurs pointages identiques d'affilée pour un seul geste.
+  if (!_skipObjectifCheck) {
+    const _now = Date.now();
+    if (_now - _lastPointageAt < 1500) return;
+    _lastPointageAt = _now;
+  }
   // Contrôle des objectifs : le vendredi, avant d'enregistrer une SORTIE, le
   // collaborateur doit déclarer s'il a atteint ses objectifs de la semaine.
   if (type === 'sortie' && !_skipObjectifCheck) {
@@ -6344,15 +6354,30 @@ function validateKioskPIN(pin, action) {
 
   const user = users[0];
   const d = new Date();
-  const p = { id: uid(), userId: user.id, type: action, date: dateStr(d), heure: timeStr(d), timestamp: d.getTime(), source: 'kiosque' };
+  const today = dateStr(d);
+  // Ne jamais se fier au bouton pressé avant d'avoir identifié la personne :
+  // sur un poste kiosque partagé, un collaborateur qui retapait par réflexe
+  // le gros bouton « Pointer ma présence » (toujours = entrée) alors qu'il
+  // était déjà en poste créait une 2e entrée sans sortie entre les deux —
+  // heures fausses, statut incohérent, sans aucun avertissement. On déduit
+  // désormais l'action réelle depuis le dernier pointage du jour de CET
+  // utilisateur, exactement comme sur l'écran individuel « Mon Pointage ».
+  const ptsJour = getPointagesUserDay(user.id, today);
+  const lastPt = ptsJour[ptsJour.length - 1];
+  const isIn = lastPt && lastPt.type === 'entree';
+  const realAction = isIn ? 'sortie' : 'entree';
+  const p = { id: uid(), userId: user.id, type: realAction, date: today, heure: timeStr(d), timestamp: d.getTime(), source: 'kiosque' };
   const pts = store.pointages(); pts.push(p); store.savePointages(pts);
-  store.addAudit({ action: action === 'entree' ? 'KIOSK_ENTREE' : 'KIOSK_SORTIE', userId: user.id, detail: `Kiosque · ${action} à ${p.heure}` });
+  store.addAudit({ action: realAction === 'entree' ? 'KIOSK_ENTREE' : 'KIOSK_SORTIE', userId: user.id, detail: `Kiosque · ${realAction} à ${p.heure}${realAction !== action ? ' (auto-corrigé, statut réel différent du bouton pressé)' : ''}` });
 
   // Success screen
   const kv = document.getElementById('view-kiosk'); if (!kv) return;
   clearInterval(window._kioskClock);
-  const actionLabel = action === 'entree' ? 'Entrée enregistrée' : 'Sortie enregistrée';
-  const actionIcon  = action === 'entree' ? '✅' : '🚪';
+  const actionLabel = realAction === 'entree' ? 'Entrée enregistrée' : 'Sortie enregistrée';
+  const actionIcon  = realAction === 'entree' ? '✅' : '🚪';
+  const mismatchNote = realAction !== action
+    ? `<div style="font-size:12px;color:var(--amber);margin-top:10px">ℹ️ Vous étiez déjà ${isIn ? 'en poste' : 'hors poste'} — la ${realAction === 'entree' ? 'entrée' : 'sortie'} a été enregistrée automatiquement à votre place.</div>`
+    : '';
   kv.innerHTML = `
     <div style="text-align:center;padding:40px 24px">
       <div style="font-size:72px;margin-bottom:16px">${actionIcon}</div>
@@ -6360,6 +6385,7 @@ function validateKioskPIN(pin, action) {
       <div style="font-size:20px;font-weight:600;color:var(--text);margin-top:8px">${user.prenom} ${user.nom}</div>
       <div style="font-size:28px;font-weight:800;color:var(--hys-green);font-variant-numeric:tabular-nums;margin-top:12px;letter-spacing:2px">${p.heure.slice(0,5)}</div>
       <div style="font-size:13px;color:var(--text3);margin-top:4px">${p.date}</div>
+      ${mismatchNote}
       <div style="margin-top:28px;height:4px;background:var(--border2);border-radius:2px;overflow:hidden;max-width:200px;margin-left:auto;margin-right:auto">
         <div id="kiosk-progress" style="height:100%;width:0%;background:var(--hys-green);transition:width 3s linear;border-radius:2px"></div>
       </div>
@@ -9491,7 +9517,11 @@ function attachEventListeners() {
   document.addEventListener('keydown', e => {
     if (e.key==='Escape') closeModal();
     if (!currentUser) return;
-    if (e.altKey && currentUser.role === ROLES.FORMATEUR) {
+    // e.repeat : le navigateur renvoie des keydown en rafale tant qu'une touche
+    // reste enfoncée (répétition clavier OS) — sans ce garde-fou, garder Alt+E
+    // ne serait-ce qu'une fraction de seconde de trop créait des dizaines de
+    // pointages « entrée » d'affilée.
+    if (e.altKey && !e.repeat && currentUser.role === ROLES.FORMATEUR) {
       if (e.key==='e') { e.preventDefault(); doPointage('entree'); }
       if (e.key==='s') { e.preventDefault(); doPointage('sortie'); }
     }
