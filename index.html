@@ -7310,7 +7310,9 @@ const supa = {
     if (!this._check()) return null;
     const { url: SUPA_URL } = getSupaConfig();
     try {
-      const orderCol = table === 'hys_soldes_cp' ? 'userId' : (table === 'hys_settings' ? 'updatedAt' : 'createdAt');
+      // hys_pointages trié par timestamp (numérique, toujours renseigné) plutôt que createdAt
+      // (texte, historiquement souvent vide côté écritures par lot — voir audit du 29/08).
+      const orderCol = table === 'hys_soldes_cp' ? 'userId' : (table === 'hys_settings' ? 'updatedAt' : (table === 'hys_pointages' ? 'timestamp' : 'createdAt'));
       const url = `${SUPA_URL}/rest/v1/${table}?${filters}&order=${orderCol}.desc.nullslast`;
       const res = await fetch(url, { headers: this._headers() });
       if (!res.ok) { console.warn(`[Supa] SELECT ${table}:`, res.status); this._onFailure(); return null; }
@@ -7967,9 +7969,15 @@ function initSupabaseRealtime() {
       let changed = false;
       // Écriture directe (setter non patché) : ces données viennent DU serveur,
       // inutile de les repousser — l'ancien code recréait une boucle pull→push à chaque cycle.
+      // Fusion par id (et non remplacement intégral) : avec plus de 200 pointages en base,
+      // un remplacement pur pouvait faire disparaître de l'écran des pointages pourtant bien
+      // enregistrés, dès qu'ils sortaient du lot de 200 renvoyé par ce cycle (voir audit du 29/08).
       const pts = await supa.select('hys_pointages', 'limit=200');
-      if (pts && JSON.stringify(pts) !== JSON.stringify(store.pointages())) {
-        _storeSetOrig('hys_pointages', pts); store.invalidate('hys_pointages'); changed = true;
+      if (pts) {
+        const allPts = store.pointages();
+        const before = JSON.stringify(allPts);
+        pts.forEach(pt => { const i = allPts.findIndex(x=>x.id===pt.id); if(i>=0) allPts[i]=pt; else allPts.push(pt); });
+        if (JSON.stringify(allPts) !== before) { _storeSetOrig('hys_pointages', allPts); store.invalidate('hys_pointages'); changed = true; }
       }
       // Toutes les absences (pas seulement en_attente) : depuis que l'admin peut créer
       // des absences déjà approuvées (planning rotation), il faut aussi voir arriver
