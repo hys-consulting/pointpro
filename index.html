@@ -2904,6 +2904,7 @@ function renderPageStagiaires(filterPromo='', search='') {
         <button class="btn btn-ghost btn-sm" id="stag-promos">🏷️ Gérer les promos</button>
         <button class="btn btn-ghost btn-sm" id="stag-import">📥 Import CSV</button>
         <button class="btn btn-ghost btn-sm" id="stag-gen-acces">🔑 Générer les accès</button>
+        <button class="btn btn-ghost btn-sm" id="stag-reset-all-pwd">🔄 Réinitialiser tous les MDP</button>
         <button class="btn btn-primary btn-sm" id="stag-add">＋ Ajouter</button>
       </div>
     </div>
@@ -2961,6 +2962,7 @@ function renderPageStagiaires(filterPromo='', search='') {
   document.getElementById('stag-add')?.addEventListener('click', () => showModalAddStagiaire());
   document.getElementById('stag-promos')?.addEventListener('click', () => showModalGererPromos());
   document.getElementById('stag-gen-acces')?.addEventListener('click', () => genererAccesStagiaires(filterPromo, search));
+  document.getElementById('stag-reset-all-pwd')?.addEventListener('click', () => reinitialiserTousMdpApprentis(filterPromo, search));
   document.getElementById('stag-import')?.addEventListener('click', () => document.getElementById('stag-import-file')?.click());
   document.getElementById('stag-import-file')?.addEventListener('change', importStagiairesCSV);
   document.querySelectorAll('.stag-edit').forEach(btn => btn.addEventListener('click', () => showModalEditStagiaire(btn.getAttribute('data-id'))));
@@ -3041,6 +3043,51 @@ async function genererAccesStagiaires(filterPromo='', search='') {
           ['Prénom','Nom','Promotion','Identifiant','Mot de passe temporaire'],
           ...credentials.map(c => [c.prenom, c.nom, c.promotion, c.username, c.tempPwd]),
         ], `acces_apprentis_${dateStr(new Date())}.csv`);
+      }},
+    ], true);
+}
+
+// Réinitialise en une seule opération le mot de passe de TOUS les comptes
+// apprentis actifs (déjà pourvus d'un accès) — utile quand un renouvellement
+// global est nécessaire (ex. rentrée, suspicion de fuite), au lieu de
+// réinitialiser un par un via "🔑 Réinitialiser MDP" (Utilisateurs).
+async function reinitialiserTousMdpApprentis(filterPromo='', search='') {
+  const users = store.users();
+  const cibles = users.filter(u => u.role === ROLES.STAGIAIRE && u.statut === 'actif');
+  if (cibles.length === 0) { toast('Aucun compte apprenti actif à réinitialiser.', 'info'); return; }
+  if (!confirm(`Réinitialiser le mot de passe de TOUS les apprentis actifs (${cibles.length} compte(s)) ?\n\nChacun devra changer son mot de passe à sa prochaine connexion. Les nouveaux mots de passe temporaires seront affichés une seule fois — pensez à les exporter avant de fermer.`)) return;
+
+  const credentials = [];
+  for (const u of cibles) {
+    const tempPwd = generateTempPassword();
+    const hash = await hashPassword(tempPwd);
+    const i = users.findIndex(x => x.id === u.id);
+    users[i].password = hash; users[i].firstLogin = true;
+    credentials.push({ prenom: u.prenom, nom: u.nom, promotion: u.service, username: u.username, tempPwd });
+  }
+  store.saveUsers(users);
+  store.addAudit({ action:'STAGIAIRES_MDP_RESET_MASSE', userId:currentUser.id, detail:`${credentials.length} mots de passe apprentis réinitialisés en masse` });
+  store.addNotif({ type:'info', message:`${credentials.length} mots de passe apprentis réinitialisés en masse — nouveaux identifiants à distribuer individuellement (voir export).` });
+  credentials.sort((a,b) => (a.promotion||'').localeCompare(b.promotion||'') || a.nom.localeCompare(b.nom));
+
+  openModal(`🔄 ${credentials.length} mot(s) de passe réinitialisé(s)`, `
+    <p class="text-xs text-muted" style="margin-bottom:10px">⚠️ Ces mots de passe temporaires ne seront plus affichés ensuite. Exportez la liste puis distribuez chaque identifiant individuellement et en privé (jamais par un canal collectif).</p>
+    <div class="table-wrap" style="max-height:360px"><table>
+      <thead><tr><th>Apprenti</th><th>Promotion</th><th>Identifiant</th><th>Nouveau mot de passe</th></tr></thead>
+      <tbody>${credentials.map(c => `<tr>
+        <td class="td-bold">${esc(c.prenom)} ${esc(c.nom)}</td>
+        <td>${promoBadge(c.promotion)}</td>
+        <td><code>${esc(c.username)}</code></td>
+        <td><code>${esc(c.tempPwd)}</code></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`,
+    [
+      { label:'Fermer', cls:'btn-ghost', action: () => { closeModal(); renderPageStagiaires(filterPromo, search); } },
+      { label:'📥 Télécharger CSV', cls:'btn-primary', action: () => {
+        downloadCSV([
+          ['Prénom','Nom','Promotion','Identifiant','Nouveau mot de passe temporaire'],
+          ...credentials.map(c => [c.prenom, c.nom, c.promotion, c.username, c.tempPwd]),
+        ], `reset_mdp_apprentis_${dateStr(new Date())}.csv`);
       }},
     ], true);
 }
