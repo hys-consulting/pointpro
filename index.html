@@ -1502,6 +1502,13 @@ function getNavPages() {
     if (perms.includes('emargements')) collabPages.push({ id:'emargements-admin', label:'Émargements', icon:'📋' });
     if (perms.includes('affectation_sessions')) collabPages.push({ id:'affectation-formateurs', label:'Affectation des sessions', icon:'🗓️' });
   }
+  // Accès aux Notifications pour les responsables d'archivage des émargements
+  // (ex. Raïssa SAID ALI) : sans ça, ils/elles ne verraient jamais l'alerte
+  // envoyée quand un·e apprenti·e signe (demande du 31/08, traçabilité Qualiopi).
+  if (perms.includes('emargements')) {
+    collabPages.push({ section:'NOTIFICATIONS' });
+    collabPages.push({ id:'notifications', label:'Notifications', icon:'🔔' });
+  }
   return collabPages;
 }
 
@@ -2108,6 +2115,46 @@ function renderSignatureDisplay(emarg) {
   </div>`;
 }
 
+// Initialise un canvas de signature tactile/souris — partagé entre la
+// signature du formateur et celle de l'apprenti·e (traçabilité Qualiopi).
+function initSignatureCanvas(canvasId, clearBtnId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#1d4ed8'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  let drawing = false, lastX = 0, lastY = 0;
+  const getPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+    if (e.touches) return { x:(e.touches[0].clientX-rect.left)*scaleX, y:(e.touches[0].clientY-rect.top)*scaleY };
+    return { x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY };
+  };
+  canvas.addEventListener('mousedown', e => { drawing=true; const p=getPos(e); lastX=p.x; lastY=p.y; });
+  canvas.addEventListener('mousemove', e => {
+    if (!drawing) return;
+    const p = getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke();
+    lastX=p.x; lastY=p.y;
+  });
+  canvas.addEventListener('mouseup', () => { drawing=false; });
+  canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing=true; const p=getPos(e); lastX=p.x; lastY=p.y; }, {passive:false});
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault(); if (!drawing) return;
+    const p = getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke();
+    lastX=p.x; lastY=p.y;
+  }, {passive:false});
+  canvas.addEventListener('touchend', () => { drawing=false; });
+  if (clearBtnId) document.getElementById(clearBtnId)?.addEventListener('click', () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  });
+}
+// Un canvas est-il resté vierge ? (évite d'enregistrer une signature "vide"
+// si quelqu'un valide sans avoir tracé quoi que ce soit).
+function isCanvasBlank(canvas) {
+  const blank = document.createElement('canvas');
+  blank.width = canvas.width; blank.height = canvas.height;
+  return canvas.toDataURL() === blank.toDataURL();
+}
+
 function openSignatureModal(statuts, session, promotion, existingId) {
   const vals = Object.values(statuts);
   const n = vals.filter(estComptePresent).length;
@@ -2128,38 +2175,7 @@ function openSignatureModal(statuts, session, promotion, existingId) {
       { label:'Annuler', cls:'btn-ghost', action: closeModal },
       { label:'✅ Valider et signer', cls:'btn-success', action: () => saveEmargement(statuts, session, promotion, existingId) }
     ]);
-
-  // Initialize canvas signature
-  setTimeout(() => {
-    const canvas = document.getElementById('sign-canvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    ctx.strokeStyle = '#1d4ed8'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    let drawing = false, lastX = 0, lastY = 0;
-    const getPos = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
-      if (e.touches) return { x:(e.touches[0].clientX-rect.left)*scaleX, y:(e.touches[0].clientY-rect.top)*scaleY };
-      return { x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY };
-    };
-    canvas.addEventListener('mousedown', e => { drawing=true; const p=getPos(e); lastX=p.x; lastY=p.y; });
-    canvas.addEventListener('mousemove', e => {
-      if (!drawing) return;
-      const p = getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke();
-      lastX=p.x; lastY=p.y;
-    });
-    canvas.addEventListener('mouseup', () => { drawing=false; });
-    canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing=true; const p=getPos(e); lastX=p.x; lastY=p.y; }, {passive:false});
-    canvas.addEventListener('touchmove', e => {
-      e.preventDefault(); if (!drawing) return;
-      const p = getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke();
-      lastX=p.x; lastY=p.y;
-    }, {passive:false});
-    canvas.addEventListener('touchend', () => { drawing=false; });
-    document.getElementById('sign-clear')?.addEventListener('click', () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    });
-  }, 80);
+  setTimeout(() => initSignatureCanvas('sign-canvas', 'sign-clear'), 80);
 }
 
 function saveEmargement(statuts, session, promotion, existingId) {
@@ -2199,18 +2215,44 @@ function saveEmargement(statuts, session, promotion, existingId) {
 }
 
 // ─── PAGE: ÉMARGEMENTS ADMIN ──────────────────────────────────────────────────
-function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
+// Une session est « prête à archiver » quand le formateur l'a signée ET que
+// tou·te·s les stagiaires présent·e·s/en atelier ont eux/elles aussi signé.
+function emargementPretAArchiver(e, stagiairesActifs) {
+  if (!e.signatureFormateur) return false;
+  const presents = stagiairesActifs.filter(s => estComptePresent(getStatut(e, s.id)));
+  if (presents.length === 0) return false;
+  return presents.every(s => e.signaturesStagiaires && e.signaturesStagiaires[s.id]);
+}
+function toggleArchiveEmargement(id) {
+  const emargements = store.emargements();
+  const i = emargements.findIndex(e => e.id === id);
+  if (i < 0) return;
+  const wasArchived = !!emargements[i].archived;
+  emargements[i].archived = !wasArchived;
+  emargements[i].archivedBy = !wasArchived ? currentUser.id : null;
+  emargements[i].archivedAt = !wasArchived ? now() : null;
+  store.saveEmargements(emargements);
+  const sessionLabel = DEMIJOURNEES[emargements[i].session]?.label || emargements[i].session;
+  store.addAudit({ action: !wasArchived ? 'EMARGEMENT_ARCHIVE' : 'EMARGEMENT_DESARCHIVE', userId: currentUser.id,
+    detail:`Émargement ${sessionLabel} du ${emargements[i].date} (${emargements[i].promotion||'—'})` });
+  toast(!wasArchived ? '📦 Marqué comme archivé.' : 'Retiré des archives.', 'success');
+  renderPageEmargementsAdmin(document.getElementById('ea-date')?.value||'', document.getElementById('ea-promo')?.value||'', document.getElementById('ea-archive')?.value||'');
+}
+
+function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive='') {
   const today = dateStr(new Date());
   const date = filterDate || today;
   const settings = store.settings();
   const promotions = settings.promotions || [];
   let emargs = store.emargements().filter(e => e.date === date);
   if (filterPromo) emargs = emargs.filter(e => e.promotion === filterPromo);
+  if (filterArchive === 'pret') emargs = emargs.filter(e => !e.archived && emargementPretAArchiver(e, store.stagiaires().filter(s => s.statut==='actif' && s.promotion===e.promotion)));
+  if (filterArchive === 'archive') emargs = emargs.filter(e => e.archived);
 
   const main = document.getElementById('main-content');
   main.innerHTML = `
     <div class="page-header">
-      <div class="page-header-left"><h2>📋 Émargements</h2><p>Suivi des feuilles de présence</p></div>
+      <div class="page-header-left"><h2>📋 Émargements</h2><p>Suivi des feuilles de présence — traçabilité formateur + apprenti·e</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-success btn-sm" id="emarg-create">➕ Créer / corriger</button>
         <button class="btn btn-primary btn-sm" id="emarg-xlsx">📊 Excel</button>
@@ -2224,54 +2266,78 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
           <option value="">Toutes promotions</option>
           ${promotions.map(p => `<option value="${p}" ${filterPromo===p?'selected':''}>${p}</option>`).join('')}
         </select>
+        <select class="form-control" id="ea-archive" style="max-width:190px">
+          <option value="">Tous les statuts</option>
+          <option value="pret" ${filterArchive==='pret'?'selected':''}>✅ Prêt à archiver</option>
+          <option value="archive" ${filterArchive==='archive'?'selected':''}>📦 Déjà archivé</option>
+        </select>
         <button class="btn btn-ghost btn-sm" id="ea-apply">Filtrer</button>
       </div>
-      ${emargs.length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">📋</div><p>Aucun émargement pour cette date</p></div></div>` :
+      ${emargs.length === 0 ? `<div class="card"><div class="empty-state"><div class="icon">📋</div><p>Aucun émargement pour ces critères</p></div></div>` :
       emargs.map(e => {
         const formateur = store.users().find(u => u.id === e.formateurId);
         const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === e.promotion);
         const presentsCount = Object.values(e.presences||{}).filter(Boolean).length;
+        const pret = emargementPretAArchiver(e, stagiaires);
+        let statutBadge;
+        if (e.archived) statutBadge = '<span class="badge badge-gray">📦 Archivé</span>';
+        else if (pret) statutBadge = '<span class="badge badge-blue">✅ Prêt à archiver</span>';
+        else if (e.signatureFormateur) statutBadge = '<span class="badge badge-amber">✍️ Signature(s) apprenti en attente</span>';
+        else statutBadge = '<span class="badge badge-amber">Non signé (formateur)</span>';
         return `<div class="card">
           <div class="card-header">
             <div>
               <div class="card-title">${DEMIJOURNEES[e.session]?.icon||''} ${DEMIJOURNEES[e.session]?.label||e.session} — ${e.promotion||'—'}</div>
               <div class="text-xs text-muted">${formateur ? formateur.prenom+' '+formateur.nom : '—'} · ${e.date}</div>
             </div>
-            <div style="display:flex;gap:6px;align-items:center">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <span class="badge badge-blue">${presentsCount}/${stagiaires.length}</span>
-              ${e.signatureFormateur ? '<span class="badge badge-green">✅ Signé</span>' : '<span class="badge badge-amber">Non signé</span>'}
+              ${statutBadge}
             </div>
           </div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Stagiaire</th><th>Promotion</th><th>Présence</th></tr></thead>
+            <thead><tr><th>Stagiaire</th><th>Promotion</th><th>Présence</th><th>Signature apprenti</th></tr></thead>
             <tbody>${stagiaires.map(s => {
               const st = getStatut(e, s.id);
               const S = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
+              const sig = e.signaturesStagiaires && e.signaturesStagiaires[s.id];
+              let sigCell;
+              if (!estComptePresent(st)) sigCell = '<span class="text-muted text-xs">—</span>';
+              else if (sig) sigCell = `<span class="badge badge-green" title="Signé le ${new Date(sig.signedAt).toLocaleString('fr-FR')}">✅ Signé</span>`;
+              else if (!e.signatureFormateur) sigCell = '<span class="text-muted text-xs">En attente du formateur</span>';
+              else sigCell = '<span class="badge badge-amber">En attente</span>';
               return `<tr>
                 <td class="td-bold">${esc(s.prenom)} ${esc(s.nom)}</td>
                 <td>${promoBadge(s.promotion)}</td>
                 <td><span class="badge ${S.cls}">${S.icon} ${S.label}</span></td>
+                <td>${sigCell}</td>
               </tr>`;
             }).join('')}</tbody>
           </table></div>
-          ${e.signatureFormateur ? `
-          <div style="margin-top:12px">
-            <div class="text-xs text-muted" style="margin-bottom:6px">Signature formateur :</div>
-            <img src="${e.signatureFormateur}" style="border:1px solid var(--border2);border-radius:6px;max-width:260px;background:#fff">
-          </div>` : ''}
-          <div style="margin-top:12px;display:flex;gap:8px">
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">
+            ${e.signatureFormateur ? `
+            <div>
+              <div class="text-xs text-muted" style="margin-bottom:6px">Signature formateur :</div>
+              <img src="${e.signatureFormateur}" style="border:1px solid var(--border2);border-radius:6px;max-width:220px;background:#fff">
+            </div>` : ''}
+            ${stagiaires.filter(s => estComptePresent(getStatut(e,s.id)) && e.signaturesStagiaires?.[s.id]).map(s => `
+            <div>
+              <div class="text-xs text-muted" style="margin-bottom:6px">${esc(s.prenom)} ${esc(s.nom)} :</div>
+              <img src="${e.signaturesStagiaires[s.id].data}" style="border:1px solid var(--border2);border-radius:6px;max-width:180px;background:#fff">
+            </div>`).join('')}
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-amber btn-sm emarg-edit-btn" data-id="${e.id}">✏️ Modifier</button>
             <button class="btn btn-ghost btn-sm emarg-print-btn" data-id="${e.id}">🖨 Imprimer</button>
             <button class="btn btn-primary btn-sm emarg-pdf-btn" data-id="${e.id}">📄 PDF</button>
-          </div>
+            ${pret || e.archived ? `<button class="btn ${e.archived?'btn-ghost':'btn-success'} btn-sm emarg-archive-btn" data-id="${e.id}">${e.archived?'↩️ Désarchiver':'📦 Marquer archivé'}</button>` : ''}
           </div>
         </div>`;
       }).join('')}
     </div>`;
 
   document.getElementById('ea-apply')?.addEventListener('click', () => {
-    renderPageEmargementsAdmin(document.getElementById('ea-date')?.value||'', document.getElementById('ea-promo')?.value||'');
+    renderPageEmargementsAdmin(document.getElementById('ea-date')?.value||'', document.getElementById('ea-promo')?.value||'', document.getElementById('ea-archive')?.value||'');
   });
   document.getElementById('emarg-export')?.addEventListener('click', () => exportEmargementsCSV(date));
   document.getElementById('emarg-xlsx')?.addEventListener('click', () => exportEmargementsXLSX(date, filterPromo));
@@ -2285,16 +2351,21 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='') {
   document.querySelectorAll('.emarg-pdf-btn').forEach(btn => {
     btn.addEventListener('click', () => generatePDFEmargement(btn.getAttribute('data-id')));
   });
+  document.querySelectorAll('.emarg-archive-btn').forEach(btn => {
+    btn.addEventListener('click', () => toggleArchiveEmargement(btn.getAttribute('data-id')));
+  });
 }
 
 function exportEmargementsCSV(date) {
   const emargs = store.emargements().filter(e => e.date === date);
-  const rows = [['Date','Session','Promotion','Formateur','Stagiaire','Présence','Signé']];
+  const rows = [['Date','Session','Promotion','Formateur','Stagiaire','Présence','Signé formateur','Signé apprenti','Archivé']];
   emargs.forEach(e => {
     const formateur = store.users().find(u => u.id === e.formateurId);
     const stagiaires = store.stagiaires().filter(s => s.promotion === e.promotion);
     stagiaires.forEach(s => {
-      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[getStatut(e,s.id)]?.label||'Absent', e.signatureFormateur?'Oui':'Non']);
+      const st = getStatut(e,s.id);
+      const sigApprenti = estComptePresent(st) ? (e.signaturesStagiaires?.[s.id] ? 'Oui' : 'Non') : '—';
+      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[st]?.label||'Absent', e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
     });
   });
   downloadCSV(rows, `emargements_${date}.csv`);
@@ -2304,14 +2375,18 @@ function exportEmargementsCSV(date) {
 async function exportEmargementsXLSX(date, filterPromo='') {
   let emargs = store.emargements().filter(e => e.date === date);
   if (filterPromo) emargs = emargs.filter(e => e.promotion === filterPromo);
-  const rows = [[`Émargements du ${date}`], [], ['Session','Promotion','Formateur','Stagiaire','Présence','Signé']];
+  const rows = [[`Émargements du ${date}`], [], ['Session','Promotion','Formateur','Stagiaire','Présence','Signé formateur','Signé apprenti','Archivé']];
   emargs.forEach(e => {
     const f = store.users().find(u => u.id === e.formateurId);
     const stags = store.stagiaires().filter(s => s.promotion === e.promotion);
-    stags.forEach(s => rows.push([DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'',
-      f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, STATUTS_PRESENCE[getStatut(e,s.id)]?.label||'Absent', e.signatureFormateur?'Oui':'Non']));
+    stags.forEach(s => {
+      const st = getStatut(e,s.id);
+      const sigApprenti = estComptePresent(st) ? (e.signaturesStagiaires?.[s.id] ? 'Oui' : 'Non') : '—';
+      rows.push([DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'',
+        f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, STATUTS_PRESENCE[st]?.label||'Absent', e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
+    });
   });
-  if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,8] }], `emargements_${date}.xlsx`))
+  if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,12,12,8] }], `emargements_${date}.xlsx`))
     toast('Export Excel émargements.','success');
 }
 
@@ -4270,6 +4345,79 @@ function renderPageStagiaireFicheIntrouvable() {
     <div class="page-body"><div class="alert alert-danger">Votre fiche apprenti est introuvable — contactez l'administration.</div></div>`;
 }
 
+// ─── SIGNATURE APPRENTI (émargement) — TRAÇABILITÉ QUALIOPI ───────────────────
+// Un·e apprenti·e peut signer une session UNIQUEMENT après validation du
+// formateur (e.signatureFormateur renseigné) et seulement s'il/elle y était
+// marqué·e présent·e ou en atelier — signer une session où l'on est marqué
+// absent n'a pas de sens. Stocké dans emarg.signaturesStagiaires[stagiaireId]
+// = { data: <PNG base64>, signedAt }, sur le même enregistrement hys_emargements
+// que la signature du formateur (donc déjà synchronisé Supabase comme le reste).
+function sessionsASignerPourStagiaire(stag) {
+  if (!stag) return [];
+  return store.emargements().filter(e =>
+    e.promotion === stag.promotion &&
+    e.signatureFormateur &&
+    estComptePresent(getStatut(e, stag.id)) &&
+    !(e.signaturesStagiaires && e.signaturesStagiaires[stag.id])
+  ).sort((a,b) => b.date.localeCompare(a.date) || (b.session > a.session ? 1 : -1));
+}
+// Prévient tou·te·s les responsables d'archivage (permission "emargements",
+// dont Raïssa SAID ALI) qu'un·e apprenti·e vient de signer — pour qu'ils/elles
+// le voient sans avoir à consulter la page en continu (demande du 31/08).
+function notifierArchivistesEmargementSigne(emarg, stag) {
+  const destinataires = store.users().filter(u => u.statut === 'actif' &&
+    (u.role === ROLES.ADMIN || (u.role === ROLES.COLLAB && getUserPermissions(u).includes('emargements'))));
+  const sessionLabel = DEMIJOURNEES[emarg.session]?.label || emarg.session;
+  destinataires.forEach(u => {
+    store.addNotif({ type:'emargement_stagiaire_signe', userId: u.id,
+      message:`✍️ ${esc(stag.prenom)} ${esc(stag.nom)} a signé son émargement ${sessionLabel} du ${emarg.date} — prêt à archiver.` });
+  });
+}
+function openStagiaireSignatureModal(emargId) {
+  const stag = currentStagiaire();
+  if (!stag) return;
+  const e = store.emargements().find(x => x.id === emargId);
+  if (!e) { toast('Émargement introuvable.', 'error'); return; }
+  const sessionLabel = DEMIJOURNEES[e.session]?.label || e.session;
+  openModal(`✍️ Ma signature — ${sessionLabel} du ${e.date}`,
+    `<div class="alert alert-info" style="margin-bottom:12px">Votre présence à cette session a été validée par votre formateur. En signant, vous la confirmez à votre tour — pour la traçabilité Qualiopi.</div>
+    <div class="form-group"><label>Signez dans le cadre ci-dessous</label>
+      <div class="sign-canvas-wrap">
+        <canvas id="stag-sign-canvas" width="500" height="150"></canvas>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-ghost btn-xs" id="stag-sign-clear">🗑 Effacer</button>
+      </div>
+    </div>`,
+    [
+      { label:'Annuler', cls:'btn-ghost', action: closeModal },
+      { label:'✅ Signer', cls:'btn-success', action: () => saveStagiaireSignature(emargId) }
+    ]);
+  setTimeout(() => initSignatureCanvas('stag-sign-canvas', 'stag-sign-clear'), 80);
+}
+function saveStagiaireSignature(emargId) {
+  const stag = currentStagiaire();
+  if (!stag) return;
+  const canvas = document.getElementById('stag-sign-canvas');
+  if (!canvas) return;
+  if (isCanvasBlank(canvas)) { toast('Merci de signer avant de valider.', 'warning'); return; }
+  const signatureData = canvas.toDataURL('image/png');
+  const emargements = store.emargements();
+  const i = emargements.findIndex(x => x.id === emargId);
+  if (i < 0) { toast('Émargement introuvable.', 'error'); return; }
+  emargements[i].signaturesStagiaires = emargements[i].signaturesStagiaires || {};
+  emargements[i].signaturesStagiaires[stag.id] = { data: signatureData, signedAt: now() };
+  store.saveEmargements(emargements);
+  const sessionLabel = DEMIJOURNEES[emargements[i].session]?.label || emargements[i].session;
+  store.addAudit({ action:'EMARGEMENT_SIGNE_STAGIAIRE', userId: currentUser.id,
+    detail:`${stag.prenom} ${stag.nom} a signé son émargement ${sessionLabel} du ${emargements[i].date}` });
+  notifierArchivistesEmargementSigne(emargements[i], stag);
+  closeModal();
+  celebrate('Émargement signé — merci ! 🎉');
+  if (currentPage === 'stagiaire-emargement') renderPageStagiaireEmargement();
+  else if (currentPage === 'stagiaire-accueil') renderPageStagiaireAccueil();
+}
+
 function renderPageStagiaireAccueil() {
   const stag = currentStagiaire();
   const main = document.getElementById('main-content');
@@ -4281,12 +4429,18 @@ function renderPageStagiaireAccueil() {
   const today = dateStr(new Date());
   const semCfa = getSemaineCFAActive(today);
   const prochaine = store.semainesCfa().filter(s => s.promotion === stag.promotion && s.debut > today).sort((a,b) => a.debut.localeCompare(b.debut))[0];
+  const aSigner = sessionsASignerPourStagiaire(stag);
 
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header-left"><h2>🏠 Bonjour ${esc(stag.prenom)} 👋</h2><p>${promoBadge(stag.promotion)} · ${today}</p></div>
     </div>
     <div class="page-body">
+      ${aSigner.length > 0 ? `
+      <div class="alert alert-warning" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <span>✍️ Vous êtes marqué·e présent·e à ${aSigner.length} session${aSigner.length>1?'s':''} déjà validée${aSigner.length>1?'s':''} par votre formateur — merci de signer votre émargement dans « Mon émargement ».</span>
+        <button class="btn btn-primary btn-sm" id="stag-goto-emargement">✍️ Signer maintenant</button>
+      </div>` : ''}
       ${semCfa && semCfa.promotion === stag.promotion
         ? `<div class="alert alert-success">🎓 Vous êtes en semaine CFA cette semaine${semCfa.theme ? ' — ' + esc(semCfa.theme) : ''}</div>`
         : `<div class="alert alert-info">🏢 Vous êtes en entreprise cette semaine</div>`}
@@ -4305,6 +4459,7 @@ function renderPageStagiaireAccueil() {
         </tbody></table>
       </div>
     </div>`;
+  document.getElementById('stag-goto-emargement')?.addEventListener('click', () => navigateTo('stagiaire-emargement'));
 }
 
 function renderPageStagiaireEmargement() {
@@ -4313,26 +4468,41 @@ function renderPageStagiaireEmargement() {
   if (!stag) { renderPageStagiaireFicheIntrouvable(); return; }
   const emargs = store.emargements().filter(e => e.promotion === stag.promotion)
     .sort((a,b) => b.date.localeCompare(a.date) || (b.session > a.session ? 1 : -1));
+  const aSigner = sessionsASignerPourStagiaire(stag);
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left"><h2>✍️ Mon émargement</h2><p>${promoBadge(stag.promotion)} · ${emargs.length} session(s)</p></div></div>
     <div class="page-body">
+      <div class="alert ${aSigner.length>0?'alert-warning':'alert-info'}" style="margin-bottom:16px">
+        ${aSigner.length>0
+          ? `✍️ ${aSigner.length} session${aSigner.length>1?'s':''} en attente de <b>votre</b> signature, juste ici dans la colonne « Ma signature ».`
+          : `ℹ️ Une fois votre présence validée par le formateur, signez votre émargement — c'est ce qui fait foi pour la traçabilité Qualiopi.`}
+      </div>
       <div class="card">
         <div class="table-wrap"><table>
-          <thead><tr><th>Date</th><th>Session</th><th>Statut</th></tr></thead>
-          <tbody>${emargs.length === 0 ? `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text3)">Aucune session émargée pour l'instant</td></tr>` :
+          <thead><tr><th>Date</th><th>Session</th><th>Statut</th><th>Formateur</th><th>Ma signature</th></tr></thead>
+          <tbody>${emargs.length === 0 ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Aucune session émargée pour l'instant</td></tr>` :
           emargs.map(e => {
             const st = getStatut(e, stag.id);
             const info = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
-            return `<tr>
+            const maSignature = e.signaturesStagiaires && e.signaturesStagiaires[stag.id];
+            const peutSigner = e.signatureFormateur && estComptePresent(st) && !maSignature;
+            return `<tr${peutSigner?' style="background:var(--amber-light)"':''}>
               <td class="td-bold">${e.date}</td>
               <td>${DEMIJOURNEES[e.session]?.icon || ''} ${DEMIJOURNEES[e.session]?.label || e.session}</td>
               <td><span class="badge ${info.cls}">${info.icon} ${info.label}</span></td>
+              <td>${e.signatureFormateur ? '<span class="badge badge-green">✅ Validé</span>' : '<span class="badge badge-amber">En attente</span>'}</td>
+              <td>${maSignature ? `<span class="badge badge-green">✅ Signé le ${new Date(maSignature.signedAt).toLocaleString('fr-FR')}</span>`
+                : peutSigner ? `<button class="btn btn-primary btn-xs stag-sign-btn" data-id="${e.id}">✍️ Signer ici</button>`
+                : `<span class="text-muted text-xs">${e.signatureFormateur ? '—' : 'En attente du formateur'}</span>`}</td>
             </tr>`;
           }).join('')}</tbody>
         </table></div>
       </div>
     </div>`;
+  document.querySelectorAll('.stag-sign-btn').forEach(btn => {
+    btn.addEventListener('click', () => openStagiaireSignatureModal(btn.getAttribute('data-id')));
+  });
 }
 
 function renderPageStagiairePlanning() {
@@ -5930,6 +6100,46 @@ async function generatePDFEmargement(emargId) {
       doc.text(`Signé le ${new Date(emarg.signedAt).toLocaleString('fr-FR')}`, M + 5, y + 42);
     }
 
+    y += 52;
+
+    // Signatures des apprenti·e·s présent·e·s — traçabilité Qualiopi : chaque
+    // stagiaire présent·e/en atelier signe individuellement, après le formateur.
+    const stagiairesPresents = stagiaires.filter(s => emarg.presences?.[s.id]);
+    if (stagiairesPresents.length > 0) {
+      if (y > 250) { doc.addPage(); y = 25; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(30, 30, 30);
+      doc.text('Signatures des apprenti·e·s', M, y);
+      y += 6;
+      const colW = (W - 2*M - 8) / 2;
+      let col = 0;
+      stagiairesPresents.forEach((s) => {
+        if (y > 265) { doc.addPage(); y = 25; col = 0; }
+        const x = M + col * (colW + 8);
+        const sig = emarg.signaturesStagiaires && emarg.signaturesStagiaires[s.id];
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        doc.setTextColor(80, 80, 80);
+        doc.text(`${s.prenom} ${s.nom}`, x, y);
+        if (sig) {
+          try { doc.addImage(sig.data, 'PNG', x, y + 2, colW - 4, 16); }
+          catch(e) {
+            doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(100, 100, 100);
+            doc.text('[Signature électronique enregistrée]', x, y + 12);
+          }
+        } else {
+          doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.3);
+          doc.rect(x, y + 2, colW - 4, 16, 'S');
+          doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(160, 160, 160);
+          doc.text('Non signé', x + 4, y + 12);
+        }
+        col++;
+        if (col >= 2) { col = 0; y += 24; }
+      });
+      if (col !== 0) y += 24;
+    }
+
     // Footer
     const totalPages = doc.getNumberOfPages();
     for (let p = 1; p <= totalPages; p++) {
@@ -7190,13 +7400,39 @@ function registerServiceWorker() {
         const newWorker = reg.installing;
         newWorker.addEventListener('statechange', () => {
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            store.addNotif({ type: 'info', message: 'Mise à jour disponible — rechargez la page pour l\'appliquer.' });
-            updateNotifBadge();
+            showUpdateBanner();
           }
         });
       });
+      // Un navigateur ne revérifie une mise à jour du Service Worker que lors
+      // d'une navigation (ouverture/rechargement de la page) — un onglet resté
+      // ouvert plusieurs jours (cas fréquent d'un poste de pointage toujours
+      // allumé) ne détecterait donc jamais un nouveau index.html/sw.js déployé
+      // entretemps. On force une vérification explicite toutes les 5 minutes.
+      setInterval(() => { reg.update().catch(() => {}); }, 5 * 60 * 1000);
     })
     .catch(err => console.warn('[HYS] SW registration failed:', err.message));
+}
+
+// Bannière de mise à jour — volontairement visible en haut de l'écran (pas
+// seulement une notification discrète dans la cloche, facilement manquée sur
+// un poste de pointage que personne ne consulte activement). S'affiche pour
+// tous les rôles dès qu'une nouvelle version du fichier a été détectée côté
+// serveur ; le rechargement reste manuel (un clic) pour ne jamais interrompre
+// un pointage ou un émargement en cours de signature.
+function showUpdateBanner() {
+  store.addNotif({ type: 'info', message: 'Mise à jour disponible — rechargez la page pour l\'appliquer.' });
+  updateNotifBadge();
+  if (document.getElementById('hys-update-banner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'hys-update-banner';
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:var(--accent);color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:center;gap:14px;font-size:14px;font-family:var(--font);box-shadow:0 2px 10px rgba(0,0,0,.25);';
+  bar.innerHTML = `
+    <span>🔄 Une nouvelle version de l'application est disponible.</span>
+    <button id="hys-update-reload" style="background:#fff;color:var(--accent2);border:none;padding:6px 16px;border-radius:var(--radius-pill);font-weight:700;cursor:pointer;font-size:13px;">Recharger maintenant</button>
+  `;
+  document.body.prepend(bar);
+  document.getElementById('hys-update-reload').addEventListener('click', () => location.reload());
 }
 
 // Indicateur hors-ligne dans la sidebar
