@@ -754,7 +754,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
 
 // ─── CONFIG SUPABASE (à modifier si vous utilisez Supabase) ──────────────────
 // Voir Paramètres → Supabase dans l'app pour les instructions
-const APP_VERSION = '2.9';
+const APP_VERSION = '3.0';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 8 * 3600 * 1000;
@@ -4567,15 +4567,32 @@ getNavPages = function() {
   const pages = _getNavPagesOrig();
   const role = currentUser?.role;
   if (role === ROLES.COLLAB) {
-    return [
-      { section:'MON ESPACE' },
-      { id:'pointage',         label:'Mon pointage',      icon:'⏱️' },
-      { id:'pointage-tache',   label:'Pointage mission',  icon:'🎯' },
-      { id:'mon-historique',   label:'Mon historique',    icon:'📋' },
-      { id:'emargement',       label:'Émargement stagiaires',icon:'✍️' },
-      { id:'objectifs',        label:'Mes objectifs',     icon:'🎯' },
-      { id:'messagerie',       label:'Messagerie',        icon:'💬' },
-    ];
+    // ⚠️ Corrigé (01/09) : ce bloc remplaçait ENTIÈREMENT la liste calculée par
+    // _getNavPagesOrig() pour tout collaborateur, ce qui supprimait silencieusement
+    // « Mes congés » (jamais accessible depuis le menu pour AUCUN collaborateur
+    // jusqu'ici) ainsi que la section FORMATION/NOTIFICATIONS accordée via les
+    // permissions complémentaires (EXTRA_PERMISSIONS — ex. Raïssa SAID ALI,
+    // permission "emargements" posée le 31/08, invisible car ce patch l'écrasait
+    // à chaque rendu, y compris après reconnexion/resynchro complète — pas un
+    // problème de cache ou de synchro). On repart désormais de la liste déjà
+    // correctement calculée par l'original (qui inclut Mes congés + les sections
+    // conditionnelles), on y insère "Pointage mission" et on complète avec les
+    // pages historiques de ce patch (émargement stagiaires / objectifs / messagerie)
+    // si elles n'y figurent pas déjà.
+    const base = pages.slice();
+    // Insère les pages "historiques" du patch juste après les pages de base de
+    // MON ESPACE (avant toute section conditionnelle FORMATION/NOTIFICATIONS),
+    // pour ne pas les faire apparaître hors section en fin de liste.
+    let insertAt = base.findIndex(p => !!p.section);
+    if (insertAt === -1) insertAt = base.length;
+    const toInsert = [
+      { id:'pointage-tache', label:'Pointage mission', icon:'🎯' },
+      { id:'emargement', label:'Émargement stagiaires', icon:'✍️' },
+      { id:'objectifs', label:'Mes objectifs', icon:'🎯' },
+      { id:'messagerie', label:'Messagerie', icon:'💬' },
+    ].filter(p => !base.some(bp => bp.id === p.id));
+    base.splice(insertAt, 0, ...toInsert);
+    return base;
   }
   if (role === ROLES.ADMIN) {
     // Insert collab pages before export
