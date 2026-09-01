@@ -1558,7 +1558,15 @@ async function doLogin() {
   // Empreinte locale correcte mais pas de session Auth (compte absent ou désynchronisé) :
   // on provisionne, awaité, pour disposer de la session AVANT toute écriture (ex. changement
   // de mot de passe) — c'est ce qui empêche le bug de non-enregistrement sous RLS.
-  if (!_authOk) { try { await supaAuthProvision(username, password); } catch (e) {} }
+  if (!_authOk) { try { _authOk = await supaAuthProvision(username, password); } catch (e) {} }
+  // Re-synchro immédiate une fois authentifié : le tout premier pull (fait au
+  // chargement de la page, AVANT toute connexion) tourne sans session Auth, donc
+  // les tables réservées au rôle "authenticated" (hys_stagiaires, hys_pointages,
+  // hys_emargements…) remontent vides ce jour-là. Sans ce second pull ICI, un
+  // appareil neuf garde ce cache vide jusqu'à la synchro périodique (3 min) —
+  // d'où des fiches "introuvables" juste après une connexion pourtant réussie
+  // (cas des apprentis se connectant pour la 1ère fois sur leur téléphone, 01/09).
+  if (_authOk && navigator.onLine) { try { await syncPull(); } catch (e) {} }
   store.set(SK.SESSION, { userId: user.id, loginAt: Date.now() });
   currentUser = store.users().find(u => u.id === user.id);
   store.addAudit({ action:'LOGIN', userId:user.id, detail:`Connexion : ${user.prenom} ${user.nom} (${ROLE_LABELS[user.role]})` });
