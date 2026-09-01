@@ -787,6 +787,7 @@ const DEMIJOURNEES = {
 const STATUTS_PRESENCE = {
   present: { label:'Présent',    icon:'✅', cls:'badge-green', btn:'btn-success' },
   atelier: { label:'En atelier', icon:'🛠️', cls:'badge-blue',  btn:'btn-primary' },
+  retard:  { label:'Retard',     icon:'⏰', cls:'badge-amber', btn:'btn-warning' },
   absent:  { label:'Absent',     icon:'❌', cls:'badge-red',   btn:'btn-ghost'   },
 };
 // Statut d'un stagiaire dans un émargement (rétro-compatible avec l'ancien
@@ -795,8 +796,40 @@ function getStatut(emarg, stagId) {
   if (emarg && emarg.statuts && emarg.statuts[stagId]) return emarg.statuts[stagId];
   return emarg?.presences?.[stagId] ? 'present' : 'absent';
 }
-// « Compté présent » = présent OU en atelier (jamais absent).
-function estComptePresent(statut) { return statut === 'present' || statut === 'atelier'; }
+// « Compté présent » = présent, en atelier OU en retard (jamais absent) — un
+// retard reste une présence, comptabilisée au prorata via calculerHeuresSession.
+function estComptePresent(statut) { return statut === 'present' || statut === 'atelier' || statut === 'retard'; }
+// Heure d'arrivée exacte d'un stagiaire en retard sur un émargement donné
+// (saisie par l'admin/Raïssa lors de la correction — cf. openEditEmargementModal).
+// Sert au calcul des heures réelles pour les fiches envoyées aux employeurs (paie).
+function getHeureArrivee(emarg, stagId) {
+  return emarg?.heuresArrivee?.[stagId] || '';
+}
+// Durée (en heures décimales) effectuée par un stagiaire sur une session
+// d'émargement donnée, selon son statut :
+//  - absent            → 0
+//  - présent / atelier → durée pleine de la session (heureDebut → heureFin)
+//  - retard            → depuis l'heure d'arrivée saisie jusqu'à la fin de la
+//    session (ou durée pleine si aucune heure d'arrivée n'a été renseignée,
+//    pour ne jamais sous-déclarer une présence faute de saisie).
+function calculerHeuresSession(emarg, stagId) {
+  const statut = getStatut(emarg, stagId);
+  if (!estComptePresent(statut)) return 0;
+  const dj = DEMIJOURNEES[emarg.session];
+  if (!dj) return 0;
+  const [hD, mD] = dj.heureDebut.split(':').map(Number);
+  const [hF, mF] = dj.heureFin.split(':').map(Number);
+  const dureePleine = (hF*60+mF - (hD*60+mD)) / 60;
+  if (statut === 'retard') {
+    const arrivee = getHeureArrivee(emarg, stagId);
+    if (arrivee && /^\d{1,2}:\d{2}$/.test(arrivee)) {
+      const [hA, mA] = arrivee.split(':').map(Number);
+      const restante = (hF*60+mF - (hA*60+mA)) / 60;
+      return Math.max(0, Math.min(dureePleine, restante));
+    }
+  }
+  return dureePleine;
+}
 
 // ─── AFFECTATIONS FORMATEURS (par date × demi-journée × promotion) ────────────
 // Stockées dans settings.affectations → synchronisées automatiquement (le store
@@ -1457,6 +1490,7 @@ function getNavPages() {
     { id:'dashboard',       label:'Tableau de bord',   icon:'📊' },
     { section:'FORMATION' },
     { id:'emargements-admin',label:'Émargements',       icon:'📋' },
+    { id:'recap-heures-apprentis', label:'Récap. heures apprentis', icon:'🧮' },
     { id:'affectation-formateurs',label:'Affectation des sessions', icon:'🗓️' },
     { id:'emargement',      label:'Prendre présence',     icon:'✍️' },
     { id:'presences-stats', label:'Présences & assiduité',icon:'📊' },
@@ -1500,6 +1534,7 @@ function getNavPages() {
   if (perms.includes('emargements') || perms.includes('affectation_sessions')) {
     collabPages.push({ section:'FORMATION' });
     if (perms.includes('emargements')) collabPages.push({ id:'emargements-admin', label:'Émargements', icon:'📋' });
+    if (perms.includes('emargements')) collabPages.push({ id:'recap-heures-apprentis', label:'Récap. heures apprentis', icon:'🧮' });
     if (perms.includes('affectation_sessions')) collabPages.push({ id:'affectation-formateurs', label:'Affectation des sessions', icon:'🗓️' });
   }
   // Accès aux Notifications pour les responsables d'archivage des émargements
@@ -1539,6 +1574,7 @@ function navigateTo(pageId) {
       case 'mon-historique':    renderPageMonHistorique(); break;
       case 'emargement':        renderPageEmargement(); break;
       case 'emargements-admin': renderPageEmargementsAdmin(); break;
+      case 'recap-heures-apprentis': renderPageRecapHeuresApprentis(); break;
       case 'affectation-formateurs': renderPageAffectationFormateurs(); break;
       case 'presences-stats':   renderPagePresencesStats(); break;
       case 'facturation-formateurs': renderPageRapportFormateurs(); break;
@@ -2254,6 +2290,7 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive
     <div class="page-header">
       <div class="page-header-left"><h2>📋 Émargements</h2><p>Suivi des feuilles de présence — traçabilité formateur + apprenti·e</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="emarg-recap-heures">🧮 Récap. heures</button>
         <button class="btn btn-success btn-sm" id="emarg-create">➕ Créer / corriger</button>
         <button class="btn btn-primary btn-sm" id="emarg-xlsx">📊 Excel</button>
         <button class="btn btn-ghost btn-sm" id="emarg-export">📥 CSV</button>
@@ -2296,11 +2333,13 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive
             </div>
           </div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Stagiaire</th><th>Promotion</th><th>Présence</th><th>Signature apprenti</th></tr></thead>
+            <thead><tr><th>Stagiaire</th><th>Promotion</th><th>Présence</th><th>Heures effectuées</th><th>Signature apprenti</th></tr></thead>
             <tbody>${stagiaires.map(s => {
               const st = getStatut(e, s.id);
               const S = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
               const sig = e.signaturesStagiaires && e.signaturesStagiaires[s.id];
+              const arrivee = getHeureArrivee(e, s.id);
+              const heures = calculerHeuresSession(e, s.id);
               let sigCell;
               if (!estComptePresent(st)) sigCell = '<span class="text-muted text-xs">—</span>';
               else if (sig) sigCell = `<span class="badge badge-green" title="Signé le ${new Date(sig.signedAt).toLocaleString('fr-FR')}">✅ Signé</span>`;
@@ -2309,7 +2348,8 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive
               return `<tr>
                 <td class="td-bold">${esc(s.prenom)} ${esc(s.nom)}</td>
                 <td>${promoBadge(s.promotion)}</td>
-                <td><span class="badge ${S.cls}">${S.icon} ${S.label}</span></td>
+                <td><span class="badge ${S.cls}">${S.icon} ${S.label}</span>${st==='retard'&&arrivee?` <span class="text-xs text-muted">dès ${esc(arrivee)}</span>`:''}</td>
+                <td class="text-xs">${estComptePresent(st) ? heures.toFixed(2).replace(/\.00$/,'').replace('.',',')+' h' : '—'}</td>
                 <td>${sigCell}</td>
               </tr>`;
             }).join('')}</tbody>
@@ -2339,6 +2379,7 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive
   document.getElementById('ea-apply')?.addEventListener('click', () => {
     renderPageEmargementsAdmin(document.getElementById('ea-date')?.value||'', document.getElementById('ea-promo')?.value||'', document.getElementById('ea-archive')?.value||'');
   });
+  document.getElementById('emarg-recap-heures')?.addEventListener('click', () => navigateTo('recap-heures-apprentis'));
   document.getElementById('emarg-export')?.addEventListener('click', () => exportEmargementsCSV(date));
   document.getElementById('emarg-xlsx')?.addEventListener('click', () => exportEmargementsXLSX(date, filterPromo));
   document.getElementById('emarg-create')?.addEventListener('click', () => openCreateEmargementModal(date));
@@ -2358,14 +2399,15 @@ function renderPageEmargementsAdmin(filterDate='', filterPromo='', filterArchive
 
 function exportEmargementsCSV(date) {
   const emargs = store.emargements().filter(e => e.date === date);
-  const rows = [['Date','Session','Promotion','Formateur','Stagiaire','Présence','Signé formateur','Signé apprenti','Archivé']];
+  const rows = [['Date','Session','Promotion','Formateur','Stagiaire','Présence','Heure arrivée','Heures effectuées','Signé formateur','Signé apprenti','Archivé']];
   emargs.forEach(e => {
     const formateur = store.users().find(u => u.id === e.formateurId);
     const stagiaires = store.stagiaires().filter(s => s.promotion === e.promotion);
     stagiaires.forEach(s => {
       const st = getStatut(e,s.id);
       const sigApprenti = estComptePresent(st) ? (e.signaturesStagiaires?.[s.id] ? 'Oui' : 'Non') : '—';
-      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[st]?.label||'Absent', e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
+      const heures = estComptePresent(st) ? calculerHeuresSession(e, s.id).toFixed(2) : '0';
+      rows.push([e.date, DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'', formateur ? formateur.prenom+' '+formateur.nom : '', `${esc(s.prenom)} ${esc(s.nom)}`, STATUTS_PRESENCE[st]?.label||'Absent', st==='retard'?getHeureArrivee(e,s.id):'', heures, e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
     });
   });
   downloadCSV(rows, `emargements_${date}.csv`);
@@ -2375,64 +2417,88 @@ function exportEmargementsCSV(date) {
 async function exportEmargementsXLSX(date, filterPromo='') {
   let emargs = store.emargements().filter(e => e.date === date);
   if (filterPromo) emargs = emargs.filter(e => e.promotion === filterPromo);
-  const rows = [[`Émargements du ${date}`], [], ['Session','Promotion','Formateur','Stagiaire','Présence','Signé formateur','Signé apprenti','Archivé']];
+  const rows = [[`Émargements du ${date}`], [], ['Session','Promotion','Formateur','Stagiaire','Présence','Heure arrivée','Heures effectuées','Signé formateur','Signé apprenti','Archivé']];
   emargs.forEach(e => {
     const f = store.users().find(u => u.id === e.formateurId);
     const stags = store.stagiaires().filter(s => s.promotion === e.promotion);
     stags.forEach(s => {
       const st = getStatut(e,s.id);
       const sigApprenti = estComptePresent(st) ? (e.signaturesStagiaires?.[s.id] ? 'Oui' : 'Non') : '—';
+      const heures = estComptePresent(st) ? calculerHeuresSession(e, s.id).toFixed(2) : '0';
       rows.push([DEMIJOURNEES[e.session]?.label||e.session, e.promotion||'',
-        f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, STATUTS_PRESENCE[st]?.label||'Absent', e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
+        f ? `${f.prenom} ${f.nom}` : '', `${s.prenom} ${s.nom}`, STATUTS_PRESENCE[st]?.label||'Absent', st==='retard'?getHeureArrivee(e,s.id):'', heures, e.signatureFormateur?'Oui':'Non', sigApprenti, e.archived?'Oui':'Non']);
     });
   });
-  if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,12,12,8] }], `emargements_${date}.xlsx`))
+  if (await downloadXLSX([{ name:'Émargements', rows, cols:[14,12,22,24,10,12,12,12,12,8] }], `emargements_${date}.xlsx`))
     toast('Export Excel émargements.','success');
 }
 
 // ─── CORRECTION ADMIN D'UN ÉMARGEMENT ────────────────────────────────────────
+// Permet à un admin ou à un·e collaborateur·rice ayant la permission
+// "emargements" (ex. Raïssa) de corriger un stagiaire marqué absent à tort en
+// "Retard" avec son heure d'arrivée EXACTE : la traçabilité pour Qualiopi est
+// conservée, et les heures réellement effectuées (calculerHeuresSession) sont
+// justes pour les fiches transmises chaque fin de mois aux employeurs (paie).
 function openEditEmargementModal(emargId) {
   const e = store.emargements().find(x => x.id === emargId);
   if (!e) { toast('Émargement introuvable.','error'); return; }
   const stagiaires = store.stagiaires().filter(s => s.statut === 'actif' && s.promotion === e.promotion);
   const statuts = {};
+  const heuresArrivee = { ...(e.heuresArrivee || {}) };
   stagiaires.forEach(s => { statuts[s.id] = getStatut(e, s.id); });
+  const dj = DEMIJOURNEES[e.session] || {};
   const body = `
     <p class="text-xs text-muted" style="margin-bottom:10px">
-      ${DEMIJOURNEES[e.session]?.icon||''} ${DEMIJOURNEES[e.session]?.label||e.session} · ${e.promotion} · ${e.date}
+      ${dj.icon||''} ${dj.label||e.session} · ${e.promotion} · ${e.date}
       ${e.signatureFormateur ? ' · <span class="badge badge-green">Signé</span>' : ''}
     </p>
-    <div class="text-xs text-muted" style="margin-bottom:10px">Correction administrateur — ajustez les statuts puis enregistrez. La modification est tracée dans le journal d'audit.</div>
+    <div class="text-xs text-muted" style="margin-bottom:10px">Correction administrateur — ajustez les statuts puis enregistrez. Pour un retard, précisez l'heure d'arrivée exacte (utilisée pour le calcul des heures réelles). La modification est tracée dans le journal d'audit.</div>
     <div class="emargement-list">
-      ${stagiaires.map(s => `<div class="emargement-row">
+      ${stagiaires.map(s => `<div class="emargement-row" style="flex-wrap:wrap">
         <span class="emargement-name">👤 ${esc(s.prenom)} ${esc(s.nom)}</span>
         <select class="form-control edit-emarg-statut" data-id="${s.id}" style="max-width:170px">
           ${Object.entries(STATUTS_PRESENCE).map(([k,v])=>`<option value="${k}" ${statuts[s.id]===k?'selected':''}>${v.icon} ${v.label}</option>`).join('')}
         </select>
+        <input type="time" class="form-control edit-emarg-heure" data-id="${s.id}" value="${esc(heuresArrivee[s.id]||'')}"
+          style="max-width:120px;${statuts[s.id]==='retard'?'':'display:none'}" title="Heure d'arrivée exacte">
       </div>`).join('')}
     </div>`;
   openModal('✏️ Modifier l\'émargement', body, [
     { label:'Annuler', cls:'btn-ghost', action: closeModal },
-    { label:'💾 Enregistrer', cls:'btn-primary', action: () => saveEmargementAdmin(emargId, statuts) },
+    { label:'💾 Enregistrer', cls:'btn-primary', action: () => saveEmargementAdmin(emargId, statuts, heuresArrivee) },
   ], true);
   document.querySelectorAll('.edit-emarg-statut').forEach(sel => {
-    sel.addEventListener('change', () => { statuts[sel.getAttribute('data-id')] = sel.value; });
+    sel.addEventListener('change', () => {
+      const id = sel.getAttribute('data-id');
+      statuts[id] = sel.value;
+      const heureInput = document.querySelector(`.edit-emarg-heure[data-id="${id}"]`);
+      if (heureInput) heureInput.style.display = sel.value === 'retard' ? '' : 'none';
+    });
+  });
+  document.querySelectorAll('.edit-emarg-heure').forEach(inp => {
+    inp.addEventListener('change', () => { heuresArrivee[inp.getAttribute('data-id')] = inp.value; });
   });
 }
-function saveEmargementAdmin(emargId, statuts) {
+function saveEmargementAdmin(emargId, statuts, heuresArrivee={}) {
   const emargements = store.emargements();
   const i = emargements.findIndex(x => x.id === emargId);
   if (i < 0) return;
   const presences = {};
   Object.entries(statuts).forEach(([id, st]) => { presences[id] = estComptePresent(st); });
+  // Ne conserve une heure d'arrivée que pour les stagiaires effectivement en retard.
+  const heures = {};
+  Object.entries(statuts).forEach(([id, st]) => { if (st === 'retard' && heuresArrivee[id]) heures[id] = heuresArrivee[id]; });
   emargements[i].presences = presences;
   emargements[i].statuts = statuts;
+  emargements[i].heuresArrivee = heures;
   emargements[i].modifiedByAdmin = true;
   emargements[i].modifiedAt = now();
   emargements[i].modifiedBy = currentUser.id;
   const e = emargements[i];
   store.saveEmargements(emargements);
-  store.addAudit({ action:'EMARGEMENT_MODIFIE_ADMIN', userId:currentUser.id, detail:`Correction admin émargement ${e.session} ${e.promotion} — ${e.date}` });
+  const retards = Object.entries(statuts).filter(([,st]) => st === 'retard').map(([id]) => id);
+  const detailRetards = retards.length ? ` — ${retards.length} retard(s) avec heure d'arrivée saisie` : '';
+  store.addAudit({ action:'EMARGEMENT_MODIFIE_ADMIN', userId:currentUser.id, detail:`Correction admin émargement ${e.session} ${e.promotion} — ${e.date}${detailRetards}` });
   closeModal();
   toast('Émargement corrigé.','success');
   renderPageEmargementsAdmin(e.date, '');
@@ -2837,6 +2903,234 @@ function renderPageRapportFormateurs(filterMonth='') {
   });
 }
 
+// ─── PAGE : RÉCAPITULATIF MENSUEL DES HEURES APPRENTIS ───────────────────────
+// Total des heures d'émargement (formation) effectuées par chaque apprenti·e
+// sur un mois donné, à partir des statuts saisis/corrigés dans les feuilles
+// d'émargement (présent/atelier = durée pleine de la session, retard = au
+// prorata de l'heure d'arrivée exacte). Destiné à Raïssa et aux admins pour
+// être joint chaque fin de mois aux fiches d'émargement envoyées aux
+// employeurs (base de calcul des bulletins de paie).
+function calculerRecapHeuresMois(ym, filterPromo='') {
+  let stagiaires = store.stagiaires().filter(s => s.statut === 'actif');
+  if (filterPromo) stagiaires = stagiaires.filter(s => s.promotion === filterPromo);
+  const emargsMois = store.emargements().filter(e => (e.date||'').startsWith(ym));
+  return stagiaires.map(s => {
+    const sessions = emargsMois.filter(e => e.promotion === s.promotion).sort((a,b) => a.date.localeCompare(b.date) || (a.session > b.session ? 1 : -1));
+    let min = 0, nPresent = 0, nAtelier = 0, nRetard = 0, nAbsent = 0;
+    let derniereSignature = null; // preuve : la signature apprenti la plus récente du mois
+    sessions.forEach(e => {
+      const st = getStatut(e, s.id);
+      if (st === 'present') nPresent++;
+      else if (st === 'atelier') nAtelier++;
+      else if (st === 'retard') nRetard++;
+      else nAbsent++;
+      min += Math.round(calculerHeuresSession(e, s.id) * 60);
+      const sig = e.signaturesStagiaires && e.signaturesStagiaires[s.id];
+      if (sig) derniereSignature = { data: sig.data, signedAt: sig.signedAt, date: e.date, session: e.session };
+    });
+    const nSignables = nPresent + nAtelier + nRetard; // sessions où une signature était attendue
+    return { stagiaire: s, min, nPresent, nAtelier, nRetard, nAbsent, nSessions: sessions.length, signature: derniereSignature, nSignables };
+  }).sort((a,b) => (a.stagiaire.promotion||'').localeCompare(b.stagiaire.promotion||'') || a.stagiaire.nom.localeCompare(b.stagiaire.nom));
+}
+function renderPageRecapHeuresApprentis(filterMonth='', filterPromo='') {
+  const now2 = new Date();
+  const ym = filterMonth || `${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,'0')}`;
+  const [year, month] = ym.split('-').map(Number);
+  const promotions = store.settings().promotions || [];
+  const rows = calculerRecapHeuresMois(ym, filterPromo);
+  const totMin = rows.reduce((a,r) => a + r.min, 0);
+  const totRetards = rows.reduce((a,r) => a + r.nRetard, 0);
+  const totAbsents = rows.reduce((a,r) => a + r.nAbsent, 0);
+  const prevYM = (() => { const d = new Date(year, month-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const nextYM = (() => { const d = new Date(year, month, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🧮 Récapitulatif heures apprentis</h2><p>Heures de formation effectuées par apprenti·e — ${MOIS[month-1]} ${year}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="rh-pdf">📄 PDF (à joindre aux fiches)</button>
+        <button class="btn btn-ghost btn-sm" id="rh-xlsx">📊 Excel</button>
+        <button class="btn btn-ghost btn-sm" id="rh-csv">📥 CSV</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar" style="align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="rh-prev">← Mois précédent</button>
+        <input type="month" class="form-control" id="rh-month" value="${ym}" style="max-width:170px">
+        <button class="btn btn-ghost btn-sm" id="rh-next">Mois suivant →</button>
+        <select class="form-control" id="rh-promo" style="max-width:170px">
+          <option value="">Toutes promotions</option>
+          ${promotions.map(p => `<option value="${p}" ${filterPromo===p?'selected':''}>${p}</option>`).join('')}
+        </select>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card blue"><div class="stat-label">Apprenti·e·s actif·ve·s</div><div class="stat-value blue">${rows.length}</div></div>
+        <div class="stat-card green"><div class="stat-label">Total heures effectuées</div><div class="stat-value green">${formatDuree(totMin)}</div></div>
+        <div class="stat-card amber"><div class="stat-label">Sessions en retard</div><div class="stat-value amber">${totRetards}</div></div>
+        <div class="stat-card red"><div class="stat-label">Sessions absence</div><div class="stat-value red">${totAbsents}</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Détail par apprenti·e — ${MOIS[month-1]} ${year}</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Apprenti·e</th><th>Promotion</th><th>Entreprise</th><th>✅ Présent</th><th>🛠️ Atelier</th><th>⏰ Retard</th><th>❌ Absent</th><th>Heures effectuées</th><th>Signature (preuve)</th></tr></thead>
+          <tbody>${rows.length===0 ? '<tr><td colspan="9" class="text-muted" style="text-align:center;padding:20px">Aucun émargement ce mois-ci.</td></tr>' :
+            rows.map((r,i) => `<tr>
+              <td class="td-bold">${esc(r.stagiaire.prenom)} ${esc(r.stagiaire.nom)}</td>
+              <td>${promoBadge(r.stagiaire.promotion)}</td>
+              <td class="text-xs text-muted">${esc(r.stagiaire.entreprise||'—')}</td>
+              <td>${r.nPresent||'—'}</td>
+              <td>${r.nAtelier||'—'}</td>
+              <td>${r.nRetard?`<span class="badge badge-amber">${r.nRetard}</span>`:'—'}</td>
+              <td>${r.nAbsent?`<span class="badge badge-red">${r.nAbsent}</span>`:'—'}</td>
+              <td><strong>${formatDuree(r.min)}</strong></td>
+              <td>${r.signature ? `<button class="btn btn-ghost btn-xs rh-view-sig" data-i="${i}" title="Signée le ${new Date(r.signature.signedAt).toLocaleString('fr-FR')}">✅ ${r.signature.date}</button>` : (r.nSignables ? '<span class="badge badge-amber">En attente</span>' : '<span class="text-muted text-xs">—</span>')}</td>
+            </tr>`).join('')}
+            ${rows.length ? `<tr style="border-top:2px solid var(--border)"><td class="td-bold" colspan="7">TOTAL</td><td class="td-bold">${formatDuree(totMin)}</td><td></td></tr>` : ''}
+          </tbody>
+        </table></div>
+        <div class="text-xs text-muted" style="padding:10px 14px">💡 Basé sur les feuilles d'émargement signées/corrigées : présent ou en atelier = durée pleine de la session, retard = au prorata depuis l'heure d'arrivée exacte saisie lors de la correction (page Émargements), absent = 0h. La colonne Signature reprend la signature apprenti la plus récente du mois (preuve qu'il/elle a bien signé sa présence) — cliquez pour l'afficher en grand.</div>
+      </div>
+    </div>`;
+
+  const go = (m,p) => renderPageRecapHeuresApprentis(m??ym, p??filterPromo);
+  document.getElementById('rh-month')?.addEventListener('change', e => go(e.target.value, undefined));
+  document.getElementById('rh-promo')?.addEventListener('change', e => go(undefined, e.target.value));
+  document.getElementById('rh-prev')?.addEventListener('click', () => go(prevYM, undefined));
+  document.getElementById('rh-next')?.addEventListener('click', () => go(nextYM, undefined));
+  document.getElementById('rh-csv')?.addEventListener('click', () => {
+    const r = [['Apprenti(e)','Promotion','Entreprise','Présent','Atelier','Retard','Absent','Heures (h)']];
+    rows.forEach(row => r.push([`${row.stagiaire.prenom} ${row.stagiaire.nom}`, row.stagiaire.promotion||'', row.stagiaire.entreprise||'', row.nPresent, row.nAtelier, row.nRetard, row.nAbsent, min2h(row.min).toString().replace('.',',')]));
+    downloadCSV(r, `recap_heures_apprentis_${ym}.csv`); toast('Export CSV récapitulatif.','success');
+  });
+  document.getElementById('rh-xlsx')?.addEventListener('click', async () => {
+    const s1 = [[`Récapitulatif heures apprentis — ${MOIS[month-1]} ${year}`], [`Exporté le ${new Date().toLocaleDateString('fr-FR')}`], [],
+      ['Apprenti(e)','Promotion','Entreprise','Présent','Atelier','Retard','Absent','Heures']];
+    rows.forEach(row => s1.push([`${row.stagiaire.prenom} ${row.stagiaire.nom}`, row.stagiaire.promotion||'', row.stagiaire.entreprise||'', row.nPresent, row.nAtelier, row.nRetard, row.nAbsent, min2h(row.min)]));
+    s1.push([]); s1.push(['TOTAL','','','','','','', min2h(totMin)]);
+    if (await downloadXLSX([{ name:'Récap heures', rows:s1, cols:[26,12,22,10,10,10,10,10] }], `recap_heures_apprentis_${ym}.xlsx`))
+      toast('Export Excel récapitulatif.','success');
+  });
+  document.getElementById('rh-pdf')?.addEventListener('click', () => genererPDFRecapHeures(ym, filterPromo, rows));
+  document.querySelectorAll('.rh-view-sig').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const r = rows[Number(btn.getAttribute('data-i'))];
+      if (!r || !r.signature) return;
+      openModal(`✍️ Signature — ${esc(r.stagiaire.prenom)} ${esc(r.stagiaire.nom)}`, `
+        <p class="text-xs text-muted" style="margin-bottom:10px">Dernière signature du mois : ${DEMIJOURNEES[r.signature.session]?.label||r.signature.session} du ${r.signature.date}, signée le ${new Date(r.signature.signedAt).toLocaleString('fr-FR')}.</p>
+        <img src="${r.signature.data}" style="border:1px solid var(--border2);border-radius:6px;max-width:100%;background:#fff">`,
+        [{ label:'Fermer', cls:'btn-ghost', action: closeModal }]);
+    });
+  });
+}
+async function genererPDFRecapHeures(ym, filterPromo, rows) {
+  const [year, month] = ym.split('-').map(Number);
+  toast('Génération PDF en cours…', 'info');
+  try {
+    const { doc, W, M } = await createHYSPDF(
+      'Récapitulatif heures apprentis',
+      `${MOIS[month-1]} ${year}${filterPromo ? ' · Promotion ' + filterPromo : ' · Toutes promotions'}`
+    );
+    let y = 38;
+    const totMin = rows.reduce((a,r) => a + r.min, 0);
+
+    doc.setFillColor(46, 189, 107); doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    doc.roundedRect(M, y, W - 2*M, 10, 1, 1, 'F');
+    doc.text(`${rows.length} apprenti(e)s · Total ${formatDuree(totMin)}`, M + 5, y + 7);
+    doc.setTextColor(30,30,30); y += 16;
+
+    const cols = { nom: M, prenom: M + 45, promo: M + 85, present: M + 108, atelier: M + 124, retard: M + 140, absent: M + 158, heures: W - M };
+    const drawHeader = () => {
+      doc.setFillColor(30,30,30); doc.rect(M, y, W-2*M, 9, 'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Nom', cols.nom+2, y+6); doc.text('Prénom', cols.prenom, y+6); doc.text('Promo', cols.promo, y+6);
+      doc.text('Prés.', cols.present, y+6); doc.text('Atel.', cols.atelier, y+6); doc.text('Ret.', cols.retard, y+6);
+      doc.text('Abs.', cols.absent, y+6); doc.text('Heures', cols.heures, y+6, { align:'right' });
+      y += 9;
+    };
+    drawHeader();
+    rows.forEach((r, i) => {
+      const s = r.stagiaire;
+      doc.setFillColor(i%2===0?250:255, i%2===0?253:255, i%2===0?250:255);
+      doc.rect(M, y, W-2*M, 8, 'F');
+      doc.setDrawColor(220,220,220); doc.setLineWidth(0.2); doc.line(M, y+8, W-M, y+8);
+      doc.setTextColor(30,30,30); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text((s.nom.length>16?s.nom.slice(0,15)+'…':s.nom), cols.nom+2, y+5.5);
+      doc.setFont('helvetica','normal');
+      doc.text((s.prenom.length>16?s.prenom.slice(0,15)+'…':s.prenom), cols.prenom, y+5.5);
+      doc.text(s.promotion||'—', cols.promo, y+5.5);
+      doc.setTextColor(80,80,80);
+      doc.text(String(r.nPresent||0), cols.present, y+5.5);
+      doc.text(String(r.nAtelier||0), cols.atelier, y+5.5);
+      doc.setTextColor(r.nRetard?217:80, r.nRetard?119:80, r.nRetard?6:80);
+      doc.text(String(r.nRetard||0), cols.retard, y+5.5);
+      doc.setTextColor(r.nAbsent?185:80, r.nAbsent?28:80, r.nAbsent?28:80);
+      doc.text(String(r.nAbsent||0), cols.absent, y+5.5);
+      doc.setTextColor(30,30,30); doc.setFont('helvetica','bold');
+      doc.text(formatDuree(r.min), cols.heures, y+5.5, { align:'right' });
+      y += 8;
+      if (y > 270 && i < rows.length - 1) { doc.addPage(); y = 20; drawHeader(); }
+    });
+    y += 4;
+    doc.setDrawColor(46,189,107); doc.setLineWidth(0.5); doc.line(M, y, W-M, y); y += 6;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(30,30,30);
+    doc.text(`TOTAL : ${formatDuree(totMin)}`, W - M, y, { align:'right' });
+    y += 10;
+
+    // Signatures des apprenti·e·s — reprend la dernière signature apprenti du
+    // mois (déjà capturée à l'émargement quotidien) comme preuve que chacun·e
+    // a bien signé sa présence et que les heures ci-dessus sont exactes.
+    doc.addPage(); y = 20;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(30,30,30);
+    doc.text('Signatures des apprenti·e·s — preuve de présence', M, y);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(100,100,100);
+    doc.text('Dernière signature apprenti du mois, déjà recueillie lors de l\'émargement quotidien.', M, y + 5);
+    y += 12;
+    const nCols = 3;
+    const gap = 4;
+    const colWsig = (W - 2*M - (nCols-1)*gap) / nCols;
+    const rowH = 26;
+    let col = 0;
+    rows.forEach((r, i) => {
+      if (y > 270) { doc.addPage(); y = 20; col = 0; }
+      const x = M + col * (colWsig + gap);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(30,30,30);
+      const nomComplet = `${r.stagiaire.prenom} ${r.stagiaire.nom}`;
+      doc.text(nomComplet.length > 28 ? nomComplet.slice(0,27)+'…' : nomComplet, x, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(120,120,120);
+      doc.text(`${formatDuree(r.min)}${r.signature?' · signé le '+r.signature.date:''}`, x, y + 4);
+      if (r.signature) {
+        try { doc.addImage(r.signature.data, 'PNG', x, y + 6, colWsig, 14); }
+        catch(e) {
+          doc.setFont('helvetica','italic'); doc.setFontSize(6.5); doc.setTextColor(100,100,100);
+          doc.text('[Signature électronique enregistrée]', x, y + 14);
+        }
+      } else {
+        doc.setDrawColor(200,200,200); doc.setLineWidth(0.3);
+        doc.rect(x, y + 6, colWsig, 14, 'S');
+        doc.setFont('helvetica','italic'); doc.setFontSize(6.5); doc.setTextColor(160,160,160);
+        doc.text(r.nSignables ? 'Signature en attente' : 'Non concerné (absent)', x + 3, y + 14);
+      }
+      col++;
+      if (col >= nCols) { col = 0; y += rowH; }
+    });
+    if (col !== 0) y += rowH;
+
+    const pages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(150,150,150);
+      doc.text(`HYS PointPro · Récapitulatif généré le ${new Date().toLocaleString('fr-FR')} · Page ${p}/${pages}`, M, 290);
+    }
+    doc.save(`recap_heures_apprentis_${ym}${filterPromo?'_'+filterPromo:''}.pdf`);
+    toast('PDF récapitulatif généré.', 'success');
+    store.addAudit({ action:'RECAP_HEURES_APPRENTIS_PDF', userId:currentUser.id, detail:`Récapitulatif heures apprentis ${ym}${filterPromo?' ('+filterPromo+')':''}` });
+  } catch (err) {
+    console.error('[HYS PointPro] PDF récap heures:', err);
+    toast('Erreur lors de la génération du PDF.', 'error');
+  }
+}
+
 function printEmargement(emargId) {
   const e = store.emargements().find(x => x.id === emargId); if (!e) return;
   const formateur = store.users().find(u => u.id === e.formateurId);
@@ -2871,11 +3165,19 @@ function printEmargement(emargId) {
       <p><strong>Promotion :</strong> ${e.promotion||'—'} &nbsp;|&nbsp; <strong>Formateur :</strong> ${formateur ? formateur.prenom+' '+formateur.nom : '—'}</p>
     </div>
     <table>
-      <thead><tr><th>#</th><th>Nom</th><th>Prénom</th><th>Promotion</th><th>Présence</th></tr></thead>
-      <tbody>${stagiaires.map((s,i) => `<tr>
+      <thead><tr><th>#</th><th>Nom</th><th>Prénom</th><th>Promotion</th><th>Statut</th><th>Heures</th></tr></thead>
+      <tbody>${stagiaires.map((s,i) => {
+        const st = getStatut(e, s.id);
+        const arrivee = getHeureArrivee(e, s.id);
+        const heures = calculerHeuresSession(e, s.id);
+        const couleur = st==='absent' ? '#b91c1c' : st==='retard' ? '#b45309' : '#15803d';
+        const S = STATUTS_PRESENCE[st] || STATUTS_PRESENCE.absent;
+        return `<tr>
         <td>${i+1}</td><td>${esc(s.nom)}</td><td>${esc(s.prenom)}</td><td>${s.promotion}</td>
-        <td style="color:${e.presences?.[s.id]?'#15803d':'#b91c1c'};font-weight:700">${e.presences?.[s.id]?'✅ Présent':'❌ Absent'}</td>
-      </tr>`).join('')}</tbody>
+        <td style="color:${couleur};font-weight:700">${S.icon} ${S.label}${st==='retard'&&arrivee?` (dès ${esc(arrivee)})`:''}</td>
+        <td>${estComptePresent(st) ? heures.toFixed(2).replace(/\.00$/,'').replace('.',',')+' h' : '—'}</td>
+      </tr>`;
+      }).join('')}</tbody>
     </table>
     <div class="sig">
       <p style="font-size:12px;font-weight:700">Signature du formateur :</p>
@@ -6040,8 +6342,11 @@ async function generatePDFEmargement(emargId) {
     doc.setTextColor(30, 30, 30);
     y += 16;
 
-    // Table header
-    const cols = { num: M, nom: M + 10, prenom: M + 65, entreprise: M + 120, presence: W - M - 22 };
+    // Table header — colonnes Statut (présent/atelier/retard/absent) et Heures
+    // effectuées ajoutées : ces fiches sont transmises chaque mois aux
+    // employeurs pour l'établissement des bulletins de paie, donc l'heure
+    // d'arrivée exacte en cas de retard doit y apparaître clairement.
+    const cols = { num: M, nom: M + 9, prenom: M + 48, entreprise: M + 85, statut: M + 122, heures: W - M };
     doc.setFillColor(30, 30, 30);
     doc.rect(M, y, W - 2*M, 9, 'F');
     doc.setTextColor(255, 255, 255);
@@ -6051,12 +6356,20 @@ async function generatePDFEmargement(emargId) {
     doc.text('Nom',         cols.nom,            y + 6);
     doc.text('Prénom',      cols.prenom,         y + 6);
     doc.text('Entreprise',  cols.entreprise,     y + 6);
-    doc.text('Présence',    cols.presence,       y + 6);
+    doc.text('Statut',      cols.statut,         y + 6);
+    doc.text('Heures',      cols.heures,         y + 6, { align: 'right' });
     y += 9;
+
+    // Couleurs PDF par statut (cohérentes avec les badges de l'app)
+    const PDF_STATUT_COLOR = {
+      present: [46, 189, 107], atelier: [37, 99, 235], retard: [217, 119, 6], absent: null,
+    };
 
     // Table rows
     stagiaires.forEach((s, i) => {
-      const present = emarg.presences?.[s.id] || false;
+      const st = getStatut(emarg, s.id);
+      const heures = calculerHeuresSession(emarg, s.id);
+      const arrivee = getHeureArrivee(emarg, s.id);
       const rowH = 9;
       doc.setFillColor(i % 2 === 0 ? 250 : 255, i % 2 === 0 ? 253 : 255, i % 2 === 0 ? 250 : 255);
       doc.rect(M, y, W - 2*M, rowH, 'F');
@@ -6071,32 +6384,47 @@ async function generatePDFEmargement(emargId) {
 
       doc.setTextColor(30, 30, 30);
       doc.setFont('helvetica', 'bold');
-      const nomText = s.nom.length > 18 ? s.nom.slice(0, 17) + '…' : s.nom;
+      const nomText = s.nom.length > 16 ? s.nom.slice(0, 15) + '…' : s.nom;
       doc.text(nomText, cols.nom, y + 6);
       doc.setFont('helvetica', 'normal');
-      const prenomText = s.prenom.length > 16 ? s.prenom.slice(0, 15) + '…' : s.prenom;
+      const prenomText = s.prenom.length > 14 ? s.prenom.slice(0, 13) + '…' : s.prenom;
       doc.text(prenomText, cols.prenom, y + 6);
-      const entText = (s.entreprise || '—').length > 16 ? (s.entreprise || '—').slice(0,15)+'…' : (s.entreprise || '—');
+      const entText = (s.entreprise || '—').length > 13 ? (s.entreprise || '—').slice(0,12)+'…' : (s.entreprise || '—');
       doc.text(entText, cols.entreprise, y + 6);
 
-      // Présence checkbox style
-      if (present) {
-        doc.setFillColor(46, 189, 107);
-        doc.roundedRect(cols.presence, y + 1.5, 20, 6, 1, 1, 'F');
+      // Statut (badge coloré) — pour un retard, l'heure d'arrivée exacte
+      // est affichée à côté, directement lisible sur la fiche envoyée en paie.
+      const color = PDF_STATUT_COLOR[st];
+      const label = (STATUTS_PRESENCE[st]?.label || 'Absent').toUpperCase();
+      if (color) {
+        doc.setFillColor(...color);
+        doc.roundedRect(cols.statut, y + 1.5, 22, 6, 1, 1, 'F');
         doc.setTextColor(255, 255, 255);
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(7);
-        doc.text('PRÉSENT', cols.presence + 2, y + 6);
+        doc.setFontSize(6.5);
+        doc.text(label, cols.statut + 2, y + 5.8);
       } else {
         doc.setDrawColor(200, 200, 200);
         doc.setLineWidth(0.4);
-        doc.roundedRect(cols.presence, y + 1.5, 20, 6, 1, 1, 'S');
+        doc.roundedRect(cols.statut, y + 1.5, 22, 6, 1, 1, 'S');
         doc.setTextColor(160, 160, 160);
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(7);
-        doc.text('ABSENT', cols.presence + 2.5, y + 6);
+        doc.setFontSize(6.5);
+        doc.text(label, cols.statut + 2.5, y + 5.8);
       }
+      if (st === 'retard' && arrivee) {
+        doc.setTextColor(217, 119, 6);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.text(`dès ${arrivee}`, cols.statut + 24, y + 5.8);
+      }
+
+      // Heures effectuées (0 pour un stagiaire absent)
       doc.setTextColor(30, 30, 30);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.text(estComptePresent(st) ? heures.toFixed(2).replace(/\.00$/,'').replace('.',',') + ' h' : '—', cols.heures, y + 6, { align: 'right' });
+
       y += rowH;
 
       // Page break
