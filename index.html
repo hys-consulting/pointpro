@@ -628,7 +628,7 @@ input:checked + .toggle-slider:before{transform:translateX(20px)}
     </div>
     <div class="form-group">
       <label>Identifiant</label>
-      <input id="login-username" class="form-control" type="text" placeholder="prenom.nom" autocomplete="username">
+      <input id="login-username" class="form-control" type="text" placeholder="prenom.nom" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">
     </div>
     <div class="form-group">
       <label>Mot de passe</label>
@@ -1527,13 +1527,21 @@ window.addEventListener('pagehide', () => { if (currentConnexionId) closeConnexi
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 async function doLogin() {
-  const username = (document.getElementById('login-username')?.value||'').trim();
+  // Normalisation en minuscule : le champ Identifiant est un <input type="text">
+  // standard, sur lequel iOS/Android mettent automatiquement une majuscule au
+  // premier caractère (autocapitalize par défaut du clavier mobile). Tous les
+  // identifiants HYS sont générés en minuscules ("prenom.nom") — sans cette
+  // normalisation, un identifiant tapé "Prenom.nom" sur téléphone ne matchait
+  // jamais (comparaison stricte ===), avec le même message générique "Identifiant
+  // ou mot de passe incorrect" qu'un vrai mauvais mot de passe → bloquait la
+  // quasi-totalité des connexions apprentis fraîches sur mobile (01/09).
+  const username = (document.getElementById('login-username')?.value||'').trim().toLowerCase();
   const password = document.getElementById('login-password')?.value||'';
   if (!username || !password) { showLoginAlert('Veuillez remplir tous les champs.','warning'); return; }
   const lockedUntil = isAccountLocked(username);
   if (lockedUntil) { startLockoutDisplay(lockedUntil); return; }
   const users = store.users();
-  const user = users.find(u => u.username === username && u.statut === 'actif');
+  const user = users.find(u => (u.username||'').toLowerCase() === username && u.statut === 'actif');
   if (!user) { recordLoginAttempt(username,false); updateAttemptBar(username); showLoginAlert('Identifiant ou mot de passe incorrect.','error'); return; }
   // La connexion s'appuie d'abord sur l'authentification Supabase (source de vérité du
   // mot de passe réellement choisi). Repli sur l'empreinte locale si l'Auth ne répond pas
