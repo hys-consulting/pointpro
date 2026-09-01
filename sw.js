@@ -1,7 +1,7 @@
 // HYS PointPro — Service Worker (mode hors-ligne)
 // Fichier réel (au lieu d'un blob: URL, non supporté par les navigateurs pour les SW).
 // Pense à changer CACHE_VERSION à chaque déploiement important pour forcer le renouvellement du cache.
-const CACHE_VERSION = 'hys-pointpro-v2.8';
+const CACHE_VERSION = 'hys-pointpro-v2.9';
 const ASSETS = [
   './',
   './index.html',
