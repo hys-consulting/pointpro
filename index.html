@@ -878,6 +878,7 @@ const SK = {
   MESSAGES:     'hys_messages',
   LOGIN_ATTEMPTS:'hys_login_attempts',
   CONNEXIONS:   'hys_connexions_stagiaires',
+  JUSTIFICATIFS_POINTAGE: 'hys_justificatifs_pointage',
 };
 
 // ─── STORE ────────────────────────────────────────────────────────────────────
@@ -914,6 +915,8 @@ const store = {
   saveEmargements(e){ this.set(SK.EMARGEMENTS, e); },
   semainesCfa()     { return this.get(SK.SEMAINES_CFA) || []; },
   saveSemainesCfa(s){ this.set(SK.SEMAINES_CFA, s); },
+  justificatifsPointage()     { return this.get(SK.JUSTIFICATIFS_POINTAGE) || []; },
+  saveJustificatifsPointage(j){ this.set(SK.JUSTIFICATIFS_POINTAGE, j); },
 
   settings() {
     const defs = {
@@ -922,6 +925,8 @@ const store = {
       heureDebut: '08:00',
       heureFin: '16:00',
       pauseDejeIner: 60,
+      margeArriveeMax: '10:00',
+      heureRepriseStricte: '13:00',
       promotions: ['EPR1','EPR2','EPR3','APH1','APH2','CATL'],
     };
     return Object.assign({}, defs, this.get(SK.SETTINGS) || {});
@@ -1228,6 +1233,159 @@ function getPointageIssuesDuJour() {
   return result;
 }
 
+// ─── MARGES DE POINTAGE & JUSTIFICATIFS (collaborateurs, règle du 01/09) ───────
+// Marge d'arrivée le matin 08h-marge (au-delà => retard auto + justificatif),
+// reprise de pause obligatoire à l'heure stricte des paramètres (13h par
+// défaut), et un justificatif est exigé pour tout oubli de pointage.
+function margeArriveeMax() { return (store.settings().margeArriveeMax || '10:00'); }
+function heureRepriseStricte() { return (store.settings().heureRepriseStricte || '13:00'); }
+function heuresMensuellesCible() {
+  // Base légale 35h/semaine : 35 × 52 / 12 = 151,67h/mois (constante, ne
+  // dépend pas du nombre de jours ouvrables du mois en cours).
+  return Math.round((35 * 52 / 12) * 100) / 100;
+}
+function minutesEcart(heureRef, heureReelle) {
+  const [hr,mr] = heureRef.split(':').map(Number);
+  const [hh,mh] = heureReelle.split(':').map(Number);
+  return (hh*60+mh) - (hr*60+mr);
+}
+function getJustificatifsPointageUser(userId) {
+  return store.justificatifsPointage().filter(j => j.userId === userId);
+}
+function getJustificatifsEnAttente() {
+  return store.justificatifsPointage().filter(j => j.statut === 'en_attente');
+}
+// Une seule demande ouverte par (userId, date, typeAnomalie) — évite les doublons.
+function upsertJustificatif(userId, date, typeAnomalie, description) {
+  const list = store.justificatifsPointage();
+  const existant = list.find(j => j.userId===userId && j.date===date && j.typeAnomalie===typeAnomalie);
+  if (existant) return existant;
+  const j = { id:uid(), userId, date, typeAnomalie, description, justificatif:null, statut:'en_attente', createdAt:now() };
+  list.unshift(j);
+  store.saveJustificatifsPointage(list);
+  const u = store.users().find(x=>x.id===userId);
+  store.addNotif({ type:'justificatif_pointage', userId, message:`${esc(u?.prenom||'')} ${esc(u?.nom||'')} — justificatif demandé : ${description}` });
+  return j;
+}
+// Vérifie l'anomalie d'un pointage d'ENTRÉE qui vient d'être enregistré :
+// 1er pointage du jour = arrivée (marge 08h-marge), 2e = reprise (heure stricte).
+function verifierAnomaliePointageEntree(userId, date, heurePointage, sortedDuJour) {
+  const u = store.users().find(x=>x.id===userId);
+  if (!u || u.role !== ROLES.COLLAB) return null;
+  if (!isJourOuvrable(date)) return null;
+  const entrees = sortedDuJour.filter(p => p.type==='entree');
+  const rang = entrees.length; // 1 = arrivée du matin, 2 = reprise après pause
+  const heure = heurePointage.slice(0,5);
+  if (rang === 1) {
+    if (minutesEcart(margeArriveeMax(), heure) > 0) {
+      const desc = `Arrivée à ${heure}, hors marge autorisée (${store.settings().heureDebut||'08:00'}–${margeArriveeMax()}).`;
+      store.addAudit({ action:'POINTAGE_RETARD_AUTO', userId, detail:desc });
+      return upsertJustificatif(userId, date, 'retard_arrivee', desc);
+    }
+  } else if (rang === 2) {
+    const ecart = minutesEcart(heureRepriseStricte(), heure);
+    if (ecart !== 0) {
+      const desc = `Reprise à ${heure} au lieu de ${heureRepriseStricte()} (écart ${ecart>0?'+':''}${ecart} min).`;
+      store.addAudit({ action:'POINTAGE_ECART_REPRISE', userId, detail:desc });
+      return upsertJustificatif(userId, date, 'ecart_reprise', desc);
+    }
+  }
+  return null;
+}
+// Oublis de pointage (entrée / sortie / reprise) — balayage rétroactif limité
+// à la mise en place de la règle (01/09/2026), jamais avant.
+const REGLE_HEURES_REELLES_DEPUIS = '2026-09-01';
+function detecterOublisJour(userId, date) {
+  if (date < REGLE_HEURES_REELLES_DEPUIS) return [];
+  if (!isJourOuvrable(date)) return [];
+  if (isAbsentDate(userId, date)) return [];
+  const nowD = new Date();
+  const isToday = date === dateStr(nowD);
+  const s = store.settings();
+  const pts = getPointagesUserDay(userId, date).sort((a,b)=>a.timestamp-b.timestamp);
+  const entrees = pts.filter(p=>p.type==='entree');
+  const sorties  = pts.filter(p=>p.type==='sortie');
+  const out = [];
+  const seuil = (hhmm, toleranceMin) => {
+    const [h,m] = hhmm.split(':').map(Number);
+    const d = new Date(date+'T00:00:00'); d.setHours(h, m+toleranceMin, 0, 0);
+    return d;
+  };
+  const passe = (seuilDate) => !isToday || nowD > seuilDate;
+  if (entrees.length === 0 && passe(seuil(margeArriveeMax(), 60))) {
+    out.push(upsertJustificatif(userId, date, 'oubli_entree', `Aucun pointage d'arrivée enregistré le ${date}.`));
+  } else if (entrees.length >= 1 && sorties.length === 0 && passe(seuil(s.heureFin||'16:00', 60))) {
+    out.push(upsertJustificatif(userId, date, 'oubli_sortie', `Entrée pointée le ${date} sans aucune sortie enregistrée.`));
+  } else if (entrees.length === 1 && sorties.length === 1 && passe(seuil(heureRepriseStricte(), 60))) {
+    out.push(upsertJustificatif(userId, date, 'oubli_reprise', `Sortie pause pointée le ${date} sans reprise enregistrée après ${heureRepriseStricte()}.`));
+  }
+  return out.filter(Boolean);
+}
+function scanOublisPointage(userId, depuis) {
+  const today = dateStr(new Date());
+  const debut = depuis && depuis > REGLE_HEURES_REELLES_DEPUIS ? depuis : REGLE_HEURES_REELLES_DEPUIS;
+  let d = debut;
+  let guard = 0;
+  while (d <= today && guard < 400) {
+    detecterOublisJour(userId, d);
+    const nd = new Date(d+'T00:00:00'); nd.setDate(nd.getDate()+1); d = dateStr(nd);
+    guard++;
+  }
+}
+
+// ─── DÉTECTION DE TENTATIVE DE FORÇAGE DU POINTAGE ─────────────────────────────
+// L'action réellement enregistrée est TOUJOURS déduite du dernier pointage du
+// jour (comme en mode kiosque), jamais du bouton/raccourci pressé — un
+// "forçage" est signalé quand ça ne correspond pas, ou en cas de répétition
+// rapprochée (tentative de doubler un pointage).
+const FORCAGE_DOUBLON_FENETRE_MIN = 3;
+function detecterEtCorrigerForcage(userId, typeDemande, date, pts) {
+  const sorted = [...pts].sort((a,b)=>a.timestamp-b.timestamp);
+  const dernier = sorted[sorted.length-1];
+  const actionReelle = dernier && dernier.type==='entree' ? 'sortie' : 'entree';
+  const result = { actionReelle, force:false, doublon:false };
+  if (typeDemande !== actionReelle) {
+    result.force = true;
+    const u = store.users().find(x=>x.id===userId);
+    store.addAudit({ action:'FORCAGE_POINTAGE_DETECTE', userId, detail:`Tentative de pointer "${typeDemande}" alors que l'action réelle était "${actionReelle}" (dernier pointage : ${dernier?dernier.type+' à '+dernier.heure:'aucun'}).` });
+    store.addNotif({ type:'forcage_pointage', userId, message:`⚠️ ${esc(u?.prenom||'')} ${esc(u?.nom||'')} a tenté de forcer un pointage "${typeDemande}" — action réelle "${actionReelle}" appliquée.` });
+  }
+  const memeType = sorted.filter(p => p.type === actionReelle);
+  const dernierMemeType = memeType[memeType.length-1];
+  if (dernierMemeType) {
+    const ecartMin = (Date.now() - dernierMemeType.timestamp) / 60000;
+    if (ecartMin >= 0 && ecartMin < FORCAGE_DOUBLON_FENETRE_MIN) {
+      result.doublon = true;
+      const u = store.users().find(x=>x.id===userId);
+      store.addAudit({ action:'POINTAGE_DOUBLON_SUSPECT', userId, detail:`Pointage "${actionReelle}" répété ${ecartMin.toFixed(1)} min après le précédent — tentative bloquée.` });
+      store.addNotif({ type:'forcage_pointage', userId, message:`⚠️ ${esc(u?.prenom||'')} ${esc(u?.nom||'')} — pointage "${actionReelle}" répété en moins de ${FORCAGE_DOUBLON_FENETRE_MIN} min (bloqué).` });
+    }
+  }
+  return result;
+}
+function openModalJustificatifPointage(j) {
+  if (!j) return;
+  openModal('🧾 Justificatif de pointage', `
+    <div class="alert alert-warning">${esc(j.description)}</div>
+    <p class="text-xs text-muted" style="margin-bottom:10px">Merci d'indiquer le motif. Cette information est transmise à l'administration pour l'élaboration des bulletins de salaire.</p>
+    <div class="form-group"><label>Motif</label>
+      <textarea id="justif-texte" class="form-control" rows="3" placeholder="Ex : embouteillage, RDV médical, panne de réveil…"></textarea>
+    </div>`,
+    [
+      { label:'Plus tard', cls:'btn-ghost', action:closeModal },
+      { label:'💾 Envoyer', cls:'btn-primary', action:() => {
+        const texte = document.getElementById('justif-texte')?.value?.trim();
+        if (!texte) { toast('Merci de préciser un motif.','warning'); return; }
+        const list = store.justificatifsPointage();
+        const i = list.findIndex(x=>x.id===j.id);
+        if (i>-1) { list[i].justificatif = texte; list[i].statut = 'fourni'; list[i].submittedAt = now(); store.saveJustificatifsPointage(list); }
+        store.addAudit({ action:'JUSTIFICATIF_POINTAGE_FOURNI', userId:currentUser.id, detail:`Justificatif fourni (${j.typeAnomalie}, ${j.date}) : ${texte}` });
+        closeModal(); toast('Justificatif envoyé.','success');
+        if (currentPage === 'pointage') renderPagePointage();
+      }}
+    ]);
+}
+
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 function updateNotifBadge() {
   const unread = store.notifs().filter(n => !n.lu).length;
@@ -1500,6 +1658,7 @@ function getNavPages() {
     { id:'objectifs',       label:'Objectifs',            icon:'🎯' },
     { id:'modules',         label:'Modules formation',    icon:'📚' },
     { id:'pointage-admin',  label:'Pointages',          icon:'⏱️' },
+    { id:'justificatifs-pointage', label:'Justificatifs pointage', icon:'🧾' },
     { section:'NOTIFICATIONS' },
     { id:'notifications',   label:'Notifications',        icon:'🔔' },
     { id:'messagerie',      label:'Messagerie',           icon:'💬' },
@@ -1584,6 +1743,7 @@ function navigateTo(pageId) {
       case 'modules':           renderPageModules(); break;
       case 'notifications':     renderPageNotifications(); break;
       case 'pointage-admin':    renderPagePointageAdmin(); break;
+      case 'justificatifs-pointage': renderPageJustificatifsPointage(); break;
       case 'utilisateurs':      renderPageUtilisateurs(); break;
       case 'audit':             renderPageAudit(); break;
       case 'export':            renderPageExport(); break;
@@ -1851,6 +2011,10 @@ function citationDuJour(poste, role) {
 // ─── PAGE: POINTAGE FORMATEUR ─────────────────────────────────────────────────
 function renderPagePointage() {
   const today = dateStr(new Date());
+  if (currentUser.role === ROLES.COLLAB) scanOublisPointage(currentUser.id);
+  const pendingJustifs = currentUser.role === ROLES.COLLAB
+    ? getJustificatifsPointageUser(currentUser.id).filter(j=>j.statut==='en_attente').sort((a,b)=>b.date.localeCompare(a.date))
+    : [];
   const pts = getPointagesUserDay(currentUser.id, today);
   const lastPt = pts[pts.length-1];
   const isIn = lastPt && lastPt.type === 'entree';
@@ -1894,6 +2058,17 @@ function renderPagePointage() {
       ${semCfa
         ? `<div class="alert alert-success">🎓 Semaine CFA active — Promotion <strong>${semCfa.promotion}</strong></div>`
         : `<div class="alert alert-warning">⚠️ Vous êtes en <strong>semaine entreprise</strong>. Le pointage CFA n'est pas attendu.</div>`}
+      ${pendingJustifs.length ? `
+      <div class="card" style="border:1px solid var(--amber);background:#fffbeb">
+        <div class="card-header"><div class="card-title">🧾 Justificatif(s) de pointage à fournir</div></div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${pendingJustifs.map(j=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;background:#fff;border-radius:8px;border:1px solid var(--border)">
+            <div><div class="td-bold text-xs">${j.date}</div><div class="text-xs text-muted">${esc(j.description)}</div></div>
+            <button class="btn btn-amber btn-xs justif-btn" data-jid="${j.id}">✍️ Justifier</button>
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
       <div class="stats-grid">
         <div class="stat-card ${isIn?'green':'red'}">
           <div class="stat-label">Statut</div>
@@ -1938,6 +2113,12 @@ function renderPagePointage() {
   document.getElementById('btn-sortie')?.addEventListener('click', () => doPointage('sortie'));
   document.getElementById('btn-emarg-matin')?.addEventListener('click', () => { navigateTo('emargement'); });
   document.getElementById('btn-emarg-apm')?.addEventListener('click', () => { navigateTo('emargement'); });
+  document.querySelectorAll('.justif-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const j = store.justificatifsPointage().find(x=>x.id===btn.getAttribute('data-jid'));
+      openModalJustificatifPointage(j);
+    });
+  });
 }
 
 let _lastPointageAt = 0;
@@ -1951,19 +2132,34 @@ async function doPointage(type, _skipObjectifCheck) {
     if (_now - _lastPointageAt < 1500) return;
     _lastPointageAt = _now;
   }
+  const d = new Date();
+  const todayStr = dateStr(d);
+  // Anti-forçage : l'action réellement enregistrée est TOUJOURS déduite du
+  // dernier pointage du jour (comme en mode kiosque), jamais du bouton ou du
+  // raccourci pressé — évite les doubles entrées/sorties en cas de tentative
+  // de forçage, et détecte/journalise ces tentatives pour l'admin.
+  const ptsAvant = getPointagesUserDay(currentUser.id, todayStr);
+  const forcage = detecterEtCorrigerForcage(currentUser.id, type, todayStr, ptsAvant);
+  if (forcage.doublon) { toast('⏳ Pointage déjà enregistré il y a moins de quelques minutes.', 'warning'); return; }
+  const realType = forcage.actionReelle;
   // Contrôle des objectifs : le vendredi, avant d'enregistrer une SORTIE, le
   // collaborateur doit déclarer s'il a atteint ses objectifs de la semaine.
-  if (type === 'sortie' && !_skipObjectifCheck) {
+  if (realType === 'sortie' && !_skipObjectifCheck) {
     const _pend = objectifCheckPending(currentUser.id, new Date());
     if (_pend) { openObjectifCheckModal(_pend, () => doPointage('sortie', true)); return; }
   }
-  const d = new Date();
-  const p = { id:uid(), userId:currentUser.id, type, date:dateStr(d), heure:timeStr(d), timestamp:d.getTime() };
+  const p = { id:uid(), userId:currentUser.id, type:realType, date:todayStr, heure:timeStr(d), timestamp:d.getTime() };
   const pts = store.pointages(); pts.push(p); store.savePointages(pts);
-  store.addAudit({ action:type==='entree'?'POINTAGE_ENTREE':'POINTAGE_SORTIE', userId:currentUser.id, detail:`${type==='entree'?'Entrée':'Sortie'} à ${p.heure} le ${p.date}` });
-  store.addNotif({ type:'pointage', userId:currentUser.id, message:`${esc(currentUser.prenom)} ${esc(currentUser.nom)} — ${type==='entree'?'Entrée':'Sortie'} à ${p.heure}` });
-  toast(`${type==='entree'?'✅ Entrée':'🚪 Sortie'} enregistrée à ${p.heure.slice(0,5)}`,'success');
+  store.addAudit({ action:realType==='entree'?'POINTAGE_ENTREE':'POINTAGE_SORTIE', userId:currentUser.id, detail:`${realType==='entree'?'Entrée':'Sortie'} à ${p.heure} le ${p.date}${forcage.force?' (action réelle déduite, différente du bouton pressé)':''}` });
+  store.addNotif({ type:'pointage', userId:currentUser.id, message:`${esc(currentUser.prenom)} ${esc(currentUser.nom)} — ${realType==='entree'?'Entrée':'Sortie'} à ${p.heure}` });
+  toast(`${realType==='entree'?'✅ Entrée':'🚪 Sortie'} enregistrée à ${p.heure.slice(0,5)}`,'success');
+  let justif = null;
+  if (realType === 'entree') {
+    const sortedDuJour = getPointagesUserDay(currentUser.id, todayStr);
+    justif = verifierAnomaliePointageEntree(currentUser.id, todayStr, p.heure, sortedDuJour);
+  }
   renderPagePointage();
+  if (justif) openModalJustificatifPointage(justif);
 }
 
 // ─── PAGE: MON HISTORIQUE ─────────────────────────────────────────────────────
@@ -4044,6 +4240,16 @@ function renderPageParametres() {
           </div>
         </div>
         <div class="settings-section">
+          <h3>⏱️ Pointage collaborateurs — heures réelles</h3>
+          <p class="text-xs text-muted" style="margin-bottom:10px">Base des bulletins de salaire : ${heuresMensuellesCible()}h/mois (35h/semaine, 8h–16h, 1h de pause). Marge d'arrivée le matin, reprise de pause à heure stricte — tout écart ou oubli déclenche une demande de justificatif.</p>
+          <div class="form-group"><label>Marge d'arrivée — jusqu'à</label>
+            <input id="set-marge-arrivee" type="time" class="form-control" value="${s.margeArriveeMax||'10:00'}" style="max-width:140px">
+          </div>
+          <div class="form-group"><label>Reprise de pause (heure stricte)</label>
+            <input id="set-reprise-stricte" type="time" class="form-control" value="${s.heureRepriseStricte||'13:00'}" style="max-width:140px">
+          </div>
+        </div>
+        <div class="settings-section">
           <h3>Promotions actives</h3>
           <p class="text-xs text-muted" style="margin-bottom:10px">Promotions disponibles dans les listes de sélection (séparées par des virgules).</p>
           <div class="form-group">
@@ -4083,6 +4289,8 @@ function renderPageParametres() {
     s.organisation = document.getElementById('set-org')?.value?.trim()||s.organisation;
     s.heureDebut = document.getElementById('set-hdeb')?.value||s.heureDebut;
     s.heureFin = document.getElementById('set-hfin')?.value||s.heureFin;
+    s.margeArriveeMax = document.getElementById('set-marge-arrivee')?.value||s.margeArriveeMax;
+    s.heureRepriseStricte = document.getElementById('set-reprise-stricte')?.value||s.heureRepriseStricte;
     const promosRaw = document.getElementById('set-promos')?.value||'';
     s.promotions = promosRaw.split(',').map(p=>p.trim()).filter(Boolean);
     s.citationsPerso = (document.getElementById('set-citations')?.value||'').split('\n').map(x=>x.trim()).filter(Boolean);
@@ -4319,6 +4527,85 @@ getNavPages = function() {
   }
   return pages;
 };
+
+// ─── PAGE: JUSTIFICATIFS POINTAGE (Admin) ──────────────────────────────────
+function renderPageJustificatifsPointage(filterStatut='', filterUser='') {
+  if (!isAdmin()) return;
+  const all = store.justificatifsPointage().slice().sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAt||'').localeCompare(a.createdAt||''));
+  const collabs = store.users().filter(u => u.role === ROLES.COLLAB);
+  let list = all;
+  if (filterStatut) list = list.filter(j => j.statut === filterStatut);
+  if (filterUser) list = list.filter(j => j.userId === filterUser);
+  const nomOf = id => { const u = store.users().find(x=>x.id===id); return u ? `${u.prenom} ${u.nom}` : id; };
+  const TYPE_LABELS = {
+    retard_arrivee:'⏰ Retard arrivée', ecart_reprise:'🕐 Écart reprise 13h',
+    oubli_entree:'❓ Oubli entrée', oubli_sortie:'❓ Oubli sortie', oubli_reprise:'❓ Oubli reprise',
+  };
+  const STATUT_BADGE = {
+    en_attente:'<span class="badge badge-amber">En attente</span>',
+    fourni:'<span class="badge badge-blue">Fourni — à traiter</span>',
+    valide:'<span class="badge badge-green">Validé</span>',
+    refuse:'<span class="badge badge-red">Refusé</span>',
+  };
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left"><h2>🧾 Justificatifs pointage</h2><p>Retards, écarts et oublis de pointage des collaborateurs — base des bulletins de salaire</p></div>
+    </div>
+    <div class="page-body">
+      <div class="filters-bar">
+        <select id="jp-statut" class="form-control" style="max-width:200px">
+          <option value="">Tous statuts</option>
+          <option value="en_attente" ${filterStatut==='en_attente'?'selected':''}>En attente</option>
+          <option value="fourni" ${filterStatut==='fourni'?'selected':''}>Fourni — à traiter</option>
+          <option value="valide" ${filterStatut==='valide'?'selected':''}>Validé</option>
+          <option value="refuse" ${filterStatut==='refuse'?'selected':''}>Refusé</option>
+        </select>
+        <select id="jp-user" class="form-control" style="max-width:220px">
+          <option value="">Tous les collaborateurs</option>
+          ${collabs.map(u=>`<option value="${u.id}" ${filterUser===u.id?'selected':''}>${esc(u.prenom)} ${esc(u.nom)}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost btn-sm" id="jp-apply">Filtrer</button>
+        <button class="btn btn-ghost btn-sm" id="jp-export">📥 CSV</button>
+      </div>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Date</th><th>Collaborateur</th><th>Anomalie</th><th>Description</th><th>Motif</th><th>Statut</th><th>Actions</th></tr></thead>
+          <tbody>${list.length===0 ? `<tr><td colspan="7" class="text-center text-muted">Aucun justificatif.</td></tr>` : list.map(j => `<tr>
+            <td class="td-mono text-xs">${j.date}</td>
+            <td class="td-bold">${esc(nomOf(j.userId))}</td>
+            <td class="text-xs">${TYPE_LABELS[j.typeAnomalie]||j.typeAnomalie}</td>
+            <td class="text-xs text-muted">${esc(j.description||'')}</td>
+            <td class="text-xs">${j.justificatif ? esc(j.justificatif) : '<span class="text-muted">—</span>'}</td>
+            <td>${STATUT_BADGE[j.statut]||j.statut}</td>
+            <td>${j.statut==='fourni' ? `
+              <button class="btn btn-ghost btn-xs jp-valider" data-jid="${j.id}">✅</button>
+              <button class="btn btn-ghost btn-xs jp-refuser" data-jid="${j.id}">❌</button>` : '—'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+  document.getElementById('jp-apply')?.addEventListener('click', () =>
+    renderPageJustificatifsPointage(document.getElementById('jp-statut')?.value||'', document.getElementById('jp-user')?.value||''));
+  document.getElementById('jp-export')?.addEventListener('click', () => {
+    const rows = [['Date','Collaborateur','Anomalie','Description','Motif','Statut']];
+    list.forEach(j => rows.push([j.date, nomOf(j.userId), TYPE_LABELS[j.typeAnomalie]||j.typeAnomalie, j.description||'', j.justificatif||'', j.statut]));
+    downloadCSV(rows, `justificatifs_pointage.csv`);
+  });
+  document.querySelectorAll('.jp-valider').forEach(btn => btn.addEventListener('click', () => traiterJustificatif(btn.getAttribute('data-jid'), 'valide')));
+  document.querySelectorAll('.jp-refuser').forEach(btn => btn.addEventListener('click', () => traiterJustificatif(btn.getAttribute('data-jid'), 'refuse')));
+}
+function traiterJustificatif(id, statut) {
+  if (!isAdmin()) return;
+  const list = store.justificatifsPointage();
+  const i = list.findIndex(x=>x.id===id); if (i===-1) return;
+  const commentaire = statut==='refuse' ? (prompt('Motif du refus (optionnel) :')||'') : '';
+  list[i].statut = statut; list[i].traitePar = currentUser.id; list[i].traiteAt = now(); list[i].commentaireAdmin = commentaire;
+  store.saveJustificatifsPointage(list);
+  store.addAudit({ action:'JUSTIFICATIF_POINTAGE_'+statut.toUpperCase(), userId:currentUser.id, detail:`Justificatif ${id} — ${statut}` });
+  toast(statut==='valide'?'Justificatif validé.':'Justificatif refusé.','success');
+  renderPageJustificatifsPointage();
+}
 
 const _navigateOrig = navigateTo;
 navigateTo = function(pageId) {
@@ -5687,6 +5974,9 @@ function renderPageRapportMensuel(filterMonth='') {
         <div class="stat-card amber"><div class="stat-label">Total effectué (équipe)</div>
           <div class="stat-value amber">${formatDuree(collabs.reduce((acc,u)=>acc+days.reduce((a,d)=>a+calcHeuresJour(getPointagesUserDay(u.id,d).sort((a,b)=>a.timestamp-b.timestamp)),0),0))}</div>
         </div>
+        <div class="stat-card purple"><div class="stat-label">Cible légale (151,67h/collab.)</div>
+          <div class="stat-value purple">${heuresMensuellesCible()}h <span class="text-xs text-muted">× ${collabs.length}</span></div>
+        </div>
       </div>
       <div class="card">
         <div class="card-header"><div class="card-title">Détail par collaborateur — ${MOIS[month-1]} ${year}</div></div>
@@ -5694,7 +5984,7 @@ function renderPageRapportMensuel(filterMonth='') {
           <thead>
             <tr>
               <th>Collaborateur</th><th>Fonction</th>
-              <th>Jours pointés</th><th>Prévu</th><th>Effectué</th><th>Écart</th>
+              <th>Jours pointés</th><th>Prévu</th><th>Effectué</th><th>Écart</th><th>Écart vs 151,67h</th><th>Justif.</th>
               <th>Absences (j)</th><th>Solde CP restant</th>
               <th>Activité principale</th>
             </tr>
@@ -5704,6 +5994,8 @@ function renderPageRapportMensuel(filterMonth='') {
             const totalMin = days.reduce((a,d) => a + calcHeuresJour(getPointagesUserDay(u.id,d).sort((x,y)=>x.timestamp-y.timestamp)), 0);
             const prevuMin = days.reduce((a,d) => a + heuresPrevuesJour(u.id, d), 0);
             const ecartMin = totalMin - prevuMin;
+            const ecartCibleMin = totalMin - Math.round(heuresMensuellesCible()*60);
+            const nbJustifs = store.justificatifsPointage().filter(j=>j.userId===u.id && j.date.startsWith(ym) && j.statut!=='valide').length;
             const absencesMois = store.absences().filter(a => a.userId===u.id && a.statut==='approuve' && a.dateDebut.startsWith(ym));
             const joursAbsents = absencesMois.reduce((a,b)=>a+(b.joursOuvrables||0),0);
             const solde = getSoldeComplet(u.id);
@@ -5719,6 +6011,8 @@ function renderPageRapportMensuel(filterMonth='') {
               <td class="text-muted">${formatDuree(prevuMin)}</td>
               <td><strong>${formatDuree(totalMin)}</strong></td>
               <td>${ecartBadge(ecartMin)}</td>
+              <td>${ecartBadge(ecartCibleMin)}</td>
+              <td>${nbJustifs > 0 ? `<span class="badge badge-amber">${nbJustifs}</span>` : '—'}</td>
               <td>${joursAbsents > 0 ? `<span class="badge badge-amber">${joursAbsents} j</span>` : '—'}</td>
               <td><span class="badge ${solde.total>=10?'badge-green':solde.total>=5?'badge-amber':'badge-red'}">${solde.total} j</span></td>
               <td class="text-xs">${topTache ? TACHE_TYPES[topTache[0]]?.icon+' '+TACHE_TYPES[topTache[0]]?.label+' ('+formatDuree(topTache[1])+')' : '—'}</td>
@@ -6946,14 +7240,27 @@ function validateKioskPIN(pin, action) {
   // était déjà en poste créait une 2e entrée sans sortie entre les deux —
   // heures fausses, statut incohérent, sans aucun avertissement. On déduit
   // désormais l'action réelle depuis le dernier pointage du jour de CET
-  // utilisateur, exactement comme sur l'écran individuel « Mon Pointage ».
+  // utilisateur (et on bloque les doublons rapprochés), exactement comme sur
+  // l'écran individuel « Mon Pointage » (voir detecterEtCorrigerForcage).
   const ptsJour = getPointagesUserDay(user.id, today);
-  const lastPt = ptsJour[ptsJour.length - 1];
-  const isIn = lastPt && lastPt.type === 'entree';
-  const realAction = isIn ? 'sortie' : 'entree';
+  const forcageK = detecterEtCorrigerForcage(user.id, action, today, ptsJour);
+  if (forcageK.doublon) {
+    if (errEl) errEl.textContent = '⏳ Pointage déjà enregistré à l\'instant. Réessayez dans quelques minutes.';
+    window._kioskPin = '';
+    return;
+  }
+  const realAction = forcageK.actionReelle;
+  const isIn = realAction === 'sortie'; // était déjà en poste avant cette action
   const p = { id: uid(), userId: user.id, type: realAction, date: today, heure: timeStr(d), timestamp: d.getTime(), source: 'kiosque' };
   const pts = store.pointages(); pts.push(p); store.savePointages(pts);
   store.addAudit({ action: realAction === 'entree' ? 'KIOSK_ENTREE' : 'KIOSK_SORTIE', userId: user.id, detail: `Kiosque · ${realAction} à ${p.heure}${realAction !== action ? ' (auto-corrigé, statut réel différent du bouton pressé)' : ''}` });
+  // Marge d'arrivée / reprise stricte : la demande de justificatif est créée
+  // silencieusement (écran partagé) — le collaborateur la complète depuis son
+  // espace personnel « Mon Pointage ».
+  let justifK = null;
+  if (realAction === 'entree') {
+    justifK = verifierAnomaliePointageEntree(user.id, today, p.heure, getPointagesUserDay(user.id, today));
+  }
 
   // Success screen
   const kv = document.getElementById('view-kiosk'); if (!kv) return;
@@ -6963,6 +7270,9 @@ function validateKioskPIN(pin, action) {
   const mismatchNote = realAction !== action
     ? `<div style="font-size:12px;color:var(--amber);margin-top:10px">ℹ️ Vous étiez déjà ${isIn ? 'en poste' : 'hors poste'} — la ${realAction === 'entree' ? 'entrée' : 'sortie'} a été enregistrée automatiquement à votre place.</div>`
     : '';
+  const justifNote = justifK
+    ? `<div style="font-size:12px;color:var(--amber);margin-top:10px">🧾 Un justificatif vous sera demandé — connectez-vous à votre espace personnel « Mon Pointage ».</div>`
+    : '';
   kv.innerHTML = `
     <div style="text-align:center;padding:40px 24px">
       <div style="font-size:72px;margin-bottom:16px">${actionIcon}</div>
@@ -6971,6 +7281,7 @@ function validateKioskPIN(pin, action) {
       <div style="font-size:28px;font-weight:800;color:var(--hys-green);font-variant-numeric:tabular-nums;margin-top:12px;letter-spacing:2px">${p.heure.slice(0,5)}</div>
       <div style="font-size:13px;color:var(--text3);margin-top:4px">${p.date}</div>
       ${mismatchNote}
+      ${justifNote}
       <div style="margin-top:28px;height:4px;background:var(--border2);border-radius:2px;overflow:hidden;max-width:200px;margin-left:auto;margin-right:auto">
         <div id="kiosk-progress" style="height:100%;width:0%;background:var(--hys-green);transition:width 3s linear;border-radius:2px"></div>
       </div>
@@ -7439,6 +7750,15 @@ function renderPageDashboardDG() {
   pointageIssues.oublis.forEach(u => {
     alertes.push({ level:'warning', icon:'❓', text:`${esc(u.prenom)} ${esc(u.nom)} — Sortie non pointée (arrivé à ${u._heureEntree})` });
   });
+
+  // Alerte 5 : justificatifs de pointage en attente / fournis à traiter
+  // (retards hors marge, écarts de reprise 13h, oublis — règle du 01/09).
+  collabs.forEach(u => scanOublisPointage(u.id, today));
+  const justifsATraiter = store.justificatifsPointage().filter(j => j.statut==='en_attente' || j.statut==='fourni');
+  if (justifsATraiter.length > 0) {
+    const aTraiter = justifsATraiter.filter(j=>j.statut==='fourni').length;
+    alertes.push({ level: aTraiter>0 ? 'danger':'warning', icon:'🧾', text:`${justifsATraiter.length} justificatif(s) de pointage — ${aTraiter} à traiter (voir Justificatifs pointage)` });
+  }
 
   // ── Données graphiques — 12 dernières semaines
   const weeks = [];
@@ -8035,6 +8355,7 @@ const SYNC_MAP = [
   { table: 'hys_objectifs',    sk: 'hys_objectifs',    label: 'Objectifs'    },
   { table: 'hys_messages',     sk: 'hys_messages',     label: 'Messagerie'   },
   { table: 'hys_connexions_stagiaires', sk: 'hys_connexions_stagiaires', label: 'Connexions apprentis' },
+  { table: 'hys_justificatifs_pointage', sk: 'hys_justificatifs_pointage', label: 'Justificatifs pointage' },
 ];
 
 // Pull depuis Supabase → localStorage
@@ -8124,6 +8445,7 @@ const _syncTableMap = {
   'hys_audit':        'hys_audit',
   'hys_objectifs':    'hys_objectifs',
   'hys_messages':     'hys_messages',
+  'hys_justificatifs_pointage': 'hys_justificatifs_pointage',
 };
 
 store.set = function(key, val) {
@@ -8395,6 +8717,17 @@ create table if not exists hys_connexions_stagiaires (
   "createdAt" timestamptz default now()
 );
 
+-- Table justificatifs de pointage (collaborateurs — règle heures réelles du 01/09/2026)
+create table if not exists hys_justificatifs_pointage (
+  id text primary key,
+  "userId" text, date text,
+  "typeAnomalie" text, description text,
+  justificatif text,
+  statut text default 'en_attente',
+  "createdAt" timestamptz default now(),
+  "submittedAt" text, "traitePar" text, "traiteAt" text, "commentaireAdmin" text
+);
+
 -- RLS : désactivé pour commencer (activer après tests)
 -- alter table hys_users enable row level security;
 
@@ -8404,6 +8737,7 @@ create index if not exists idx_absences_user on hys_absences("userId");
 create index if not exists idx_emargements_date on hys_emargements(date);
 create index if not exists idx_audit_ts on hys_audit(ts desc);
 create index if not exists idx_connexions_stagiaire on hys_connexions_stagiaires("stagiaireId");
+create index if not exists idx_justif_pointage_user_date on hys_justificatifs_pointage("userId", date);
 
 -- ✅ Tables créées — retournez dans HYS PointPro → Paramètres → Supabase
 --    et cliquez "Envoyer tout vers Supabase"
@@ -10092,6 +10426,8 @@ async function initDefaultData() {
       heureDebut: '08:00',
       heureFin: '16:00',
       pauseDejeIner: 60,
+      margeArriveeMax: '10:00',
+      heureRepriseStricte: '13:00',
       promotions: ['EPR1','EPR2','EPR3','APH1','APH2','CATL'],
     });
     store.addAudit({ action:'INIT', userId:'system', detail:'HYS PointPro v1.1 initialisé — Compte admin créé (admin.hys)' });
